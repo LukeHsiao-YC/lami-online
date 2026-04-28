@@ -10,14 +10,15 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
+  <!-- 改為載入 Realtime Database 模組 -->
   <script type="module">
     import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
     import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
-    import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, deleteDoc } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+    import { getDatabase, ref, set, get, update, onValue, remove } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js';
 
     window.FirebaseModules = {
       initializeApp, getApps, getApp, getAuth, signInAnonymously, onAuthStateChanged,
-      getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, deleteDoc
+      getDatabase, ref, set, get, update, onValue, remove
     };
     window.dispatchEvent(new Event('firebaseModulesReady'));
   </script>
@@ -48,6 +49,7 @@
     const MY_FIREBASE_CONFIG = {
       apiKey: "AIzaSyB-JKAKg3SRs60w6n4z6QA94V33RCBfvfM",
       authDomain: "rummikub-a2452.firebaseapp.com",
+      databaseURL: "https://rummikub-a2452-default-rtdb.firebaseio.com", // 新增 RTDB URL
       projectId: "rummikub-a2452",
       storageBucket: "rummikub-a2452.firebasestorage.app",
       messagingSenderId: "944905371953",
@@ -82,7 +84,6 @@
       if (tiles.length < 3) return false;
       const regulars = tiles.filter(t => !t.isJoker);
       if (regulars.length <= 1) return true;
-      
       const isGroup = () => {
         if (tiles.length > 4) return false;
         const val = regulars[0].value;
@@ -93,7 +94,6 @@
         }
         return true;
       };
-
       const isRun = () => {
         const color = regulars[0].colorIdx;
         if (regulars.some(t => t.colorIdx !== color)) return false;
@@ -112,6 +112,15 @@
       return isGroup() || isRun();
     };
 
+    const getSetValue = (tiles) => {
+      if (!isValidSet(tiles)) return 0;
+      const regulars = tiles.filter(t => !t.isJoker);
+      if (regulars.length === 0) return 0;
+      if (regulars.every(t => t.value === regulars[0].value)) return regulars[0].value * tiles.length;
+      let minVal = regulars.reduce((min, t) => Math.min(min, t.value), 14);
+      return (minVal + minVal + tiles.length - 1) * tiles.length / 2;
+    };
+
     const sortTiles = (tiles) => {
       const regulars = tiles.filter(t => !t.isJoker);
       const jokers = tiles.filter(t => t.isJoker);
@@ -120,7 +129,6 @@
       return [...regulars.sort((a,b) => a.value - b.value), ...jokers];
     };
 
-    // --- 元件 ---
     const Tile = ({ tile, onClick, isStaged, invalid, isHinted }) => {
       const colorClass = tile.isJoker ? 'text-purple-600' : COLORS[tile.colorIdx];
       const borderClass = tile.isJoker ? 'border-purple-600' : BORDER_COLORS[tile.colorIdx];
@@ -135,7 +143,7 @@
     };
 
     function App({ fbApp }) {
-      const { getAuth, signInAnonymously, onAuthStateChanged, getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot } = window.FirebaseModules;
+      const { getAuth, signInAnonymously, onAuthStateChanged, getDatabase, ref, set, get, update, onValue } = window.FirebaseModules;
       
       const [user, setUser] = useState(null);
       const [playerName, setPlayerName] = useState('');
@@ -153,7 +161,7 @@
       const [backupHand, setBackupHand] = useState([]);
       const [backupBoard, setBackupBoard] = useState([]);
 
-      const db = useMemo(() => getFirestore(fbApp), [fbApp]);
+      const db = useMemo(() => getDatabase(fbApp), [fbApp]);
       const auth = useMemo(() => getAuth(fbApp), [fbApp]);
 
       useEffect(() => {
@@ -165,9 +173,10 @@
 
       useEffect(() => {
         if (!roomId) return;
-        return onSnapshot(doc(db, 'rooms', roomId), (snap) => {
+        const roomRef = ref(db, 'rooms/' + roomId);
+        return onValue(roomRef, (snap) => {
           if (snap.exists()) {
-            const data = snap.data();
+            const data = snap.val();
             setRoomData(data);
             if (data.status === 'playing' && gameState !== 'playing') setGameState('playing');
           } else {
@@ -177,16 +186,15 @@
         }, (err) => setMenuError("連線中斷：" + err.message));
       }, [roomId, db]);
 
-      // 當輪到自己或遊戲開始時，同步本地狀態
       useEffect(() => {
         if (gameState === 'playing' && roomData) {
           const me = roomData.players.find(p => p.id === user.uid);
           if (me) {
-            setLocalHand(me.hand);
-            setBackupHand(me.hand);
+            setLocalHand(me.hand || []);
+            setBackupHand(me.hand || []);
           }
-          setLocalBoard(roomData.board);
-          setBackupBoard(roomData.board);
+          setLocalBoard(roomData.board || []);
+          setBackupBoard(roomData.board || []);
           setStaging([]);
         }
       }, [roomData?.turn, gameState === 'playing']);
@@ -200,7 +208,7 @@
         
         const code = Math.random().toString(36).substring(2, 6).toUpperCase();
         try {
-          await setDoc(doc(db, 'rooms', code), {
+          await set(ref(db, 'rooms/' + code), {
             hostId: user.uid,
             status: 'waiting',
             players: [{ id: user.uid, name: playerName, hand: [], hasIceBroken: false, isBot: false }],
@@ -213,7 +221,7 @@
           setRoomId(code);
           setGameState('lobby');
         } catch (e) {
-          setMenuError("建立房間失敗：" + e.message + "。請確認資料庫規則是否開放。");
+          setMenuError("建立房間失敗：" + e.message);
         } finally {
           setIsProcessing(false);
         }
@@ -224,12 +232,16 @@
         if (!code || !playerName.trim()) { setMenuError("請輸入暱稱與代碼"); return; }
         setIsProcessing(true);
         try {
-          const snap = await getDoc(doc(db, 'rooms', code));
+          const snap = await get(ref(db, 'rooms/' + code));
           if (!snap.exists()) throw new Error("找不到該房間");
-          const data = snap.data();
+          const data = snap.val();
           if (data.status !== 'waiting') throw new Error("遊戲已開始");
-          const newPlayers = [...data.players, { id: user.uid, name: playerName, hand: [], hasIceBroken: false, isBot: false }];
-          await updateDoc(doc(db, 'rooms', code), { players: newPlayers });
+          
+          const players = data.players || [];
+          if (players.length >= 4) throw new Error("房間已滿");
+          
+          const newPlayers = [...players, { id: user.uid, name: playerName, hand: [], hasIceBroken: false, isBot: false }];
+          await update(ref(db, 'rooms/' + code), { players: newPlayers });
           setRoomId(code);
           setGameState('lobby');
         } catch (e) { setMenuError(e.message); }
@@ -237,15 +249,16 @@
       };
 
       const handleAddBot = async () => {
-        if (!roomData || roomData.players.length >= 4) return;
-        const newPlayers = [...roomData.players, {
+        if (!roomData || (roomData.players || []).length >= 4) return;
+        const players = roomData.players || [];
+        const newPlayers = [...players, {
           id: 'bot_' + Date.now(),
-          name: `電腦 ${roomData.players.filter(p=>p.isBot).length + 1}`,
+          name: `電腦 ${players.filter(p=>p.isBot).length + 1}`,
           hand: [],
           hasIceBroken: false,
           isBot: true
         }];
-        await updateDoc(doc(db, 'rooms', roomId), { players: newPlayers });
+        await update(ref(db, 'rooms/' + roomId), { players: newPlayers });
       };
 
       const handleStartGame = async () => {
@@ -255,7 +268,7 @@
           hand: deck.splice(0, 14),
           hasIceBroken: false
         }));
-        await updateDoc(doc(db, 'rooms', roomId), {
+        await update(ref(db, 'rooms/' + roomId), {
           status: 'playing',
           players,
           deck,
@@ -264,7 +277,6 @@
         });
       };
 
-      // --- 遊戲中操作 ---
       const handleEndTurn = async () => {
         if (staging.length > 0) return;
         const meIdx = roomData.players.findIndex(p => p.id === user.uid);
@@ -272,7 +284,7 @@
         const newPlayers = [...roomData.players];
         newPlayers[meIdx] = { ...me, hand: localHand };
         
-        await updateDoc(doc(db, 'rooms', roomId), {
+        await update(ref(db, 'rooms/' + roomId), {
           players: newPlayers,
           board: localBoard,
           turn: (roomData.turn + 1) % roomData.players.length
@@ -319,7 +331,7 @@
                 </div>
 
                 <div className="flex gap-2">
-                  <input type="text" value={joinCode} onChange={e=>setJoinCode(e.target.value)} placeholder="輸入房號" className="flex-1 px-4 py-3 bg-stone-50 border-2 border-stone-100 rounded-2xl text-center font-mono font-bold uppercase" maxLength={4} />
+                  <input type="text" value={joinCode} onChange={e=>setJoinCode(e.target.value)} placeholder="房號" className="flex-1 px-4 py-3 bg-stone-50 border-2 border-stone-100 rounded-2xl text-center font-mono font-bold uppercase" maxLength={4} />
                   <button onClick={handleJoinRoom} className="px-6 py-3 bg-emerald-500 text-white font-black rounded-2xl shadow-md active:scale-95 transition-transform">加入</button>
                 </div>
               </div>
@@ -335,16 +347,16 @@
                 
                 <div className="text-left mb-8">
                   <div className="flex justify-between items-end mb-3 border-b-2 border-stone-50 pb-2">
-                    <span className="text-sm font-black text-stone-400">已加入玩家 ({roomData?.players.length}/4)</span>
+                    <span className="text-sm font-black text-stone-400">已加入玩家 ({(roomData?.players || []).length}/4)</span>
                   </div>
                   <div className="space-y-2">
-                    {roomData?.players.map(p => (
+                    {(roomData?.players || []).map(p => (
                       <div key={p.id} className="flex justify-between items-center bg-stone-50 px-4 py-3 rounded-2xl">
                         <span className="font-bold text-stone-700">{p.isBot ? '🤖' : '👤'} {p.name} {p.id === roomData.hostId ? '👑' : ''}</span>
                         {roomData.hostId === user.uid && p.id !== user.uid && <button className="text-red-300 text-xs font-bold">移除</button>}
                       </div>
                     ))}
-                    {roomData?.hostId === user.uid && roomData.players.length < 4 && (
+                    {roomData?.hostId === user.uid && (roomData.players || []).length < 4 && (
                       <button onClick={handleAddBot} className="w-full py-3 border-2 border-dashed border-stone-200 rounded-2xl text-stone-300 font-bold text-sm">+ 加入電腦對手</button>
                     )}
                   </div>
@@ -363,18 +375,18 @@
              <div className="flex-1 flex flex-col">
                 <div className="bg-stone-800 text-white p-3 flex justify-between items-center shrink-0">
                    <div className="flex gap-2 overflow-x-auto hide-scrollbar">
-                      {roomData.players.map((p, i) => (
+                      {(roomData.players || []).map((p, i) => (
                         <div key={p.id} className={`px-2 py-1 rounded-lg text-[10px] whitespace-nowrap font-bold ${roomData.turn === i ? 'bg-yellow-500 text-black ring-2 ring-white' : 'bg-stone-700 text-stone-400'}`}>
-                           {p.name}: {p.hand.length}
+                           {p.name}: {(p.hand || []).length}
                         </div>
                       ))}
                    </div>
-                   <div className="text-[10px] font-black text-stone-500">DECK: {roomData.deck.length}</div>
+                   <div className="text-[10px] font-black text-stone-500">DECK: {(roomData.deck || []).length}</div>
                 </div>
                 
                 <div className="flex-1 p-4 overflow-y-auto">
                    <div className="flex flex-wrap gap-4 justify-center">
-                      {localBoard.map((set, idx) => (
+                      {(localBoard || []).map((set, idx) => (
                         <div key={idx} className="flex gap-1 p-2 bg-white/50 rounded-xl border-2 border-stone-300">
                            {set.map(t => <Tile key={t.id} tile={t} />)}
                         </div>
@@ -404,16 +416,10 @@
       );
     }
 
-    // --- 初始化入口 ---
     function Main() {
       const [ready, setReady] = useState(false);
       const [app, setApp] = useState(null);
-      const [error, setError] = useState(null);
-
       useEffect(() => {
-        // 捕捉全域錯誤並顯示在 UI
-        window.onerror = (msg) => setError(msg);
-
         const init = () => {
           if (!window.FirebaseModules) return;
           const { initializeApp, getApps, getApp } = window.FirebaseModules;
@@ -421,25 +427,11 @@
             const currentApp = getApps().length > 0 ? getApp() : initializeApp(MY_FIREBASE_CONFIG);
             setApp(currentApp);
             setReady(true);
-          } catch(e) { 
-            console.error(e);
-            setError("Firebase 初始化失敗，請檢查設定代碼是否正確。");
-          }
+          } catch(e) { console.error(e); }
         };
         if (window.FirebaseModules) init();
         else window.addEventListener('firebaseModulesReady', init);
       }, []);
-
-      if (error) return (
-        <div className="h-screen flex items-center justify-center p-6 bg-stone-100">
-           <div className="bg-white p-6 rounded-2xl border-2 border-red-100 shadow-xl">
-             <h2 className="text-red-500 font-black mb-2">發生錯誤</h2>
-             <p className="text-stone-600 text-sm leading-relaxed font-bold">{error}</p>
-             <button onClick={()=>window.location.reload()} className="mt-4 px-4 py-2 bg-stone-800 text-white rounded-xl text-xs">重新整理</button>
-           </div>
-        </div>
-      );
-
       return ready ? <App fbApp={app} /> : <div className="h-screen flex items-center justify-center font-bold text-stone-400">正在同步雲端模組...</div>;
     }
 
