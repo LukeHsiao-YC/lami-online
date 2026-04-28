@@ -1079,22 +1079,30 @@
       const [modulesLoaded, setModulesLoaded] = useState(false);
 
       useEffect(() => {
+        // 使用 new Function 繞過 Babel 對 import() 的轉譯
+        const dynamicImport = new Function('url', 'return import(url)');
+        
         Promise.all([
-          import('https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js'),
-          import('https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js'),
-          import('https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js')
-        ]).then(([app, auth, fs]) => {
-          window.fbApp = app;
-          window.fbAuth = auth;
-          window.fbFs = fs;
-          
-          const appId = typeof __app_id !== 'undefined' ? __app_id : 'rummikub-multiplayer';
+          dynamicImport('https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js'),
+          dynamicImport('https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js'),
+          dynamicImport('https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js')
+        ]).then(([appModule, authModule, fsModule]) => {
           let config = {};
           try { config = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}'); } catch(e) {}
           
+          let appInstance;
           if (Object.keys(config).length > 0) {
-             app.initializeApp(config);
+             appInstance = appModule.initializeApp(config);
+          } else {
+             // 若無環境變數，提供預設的佔位配置以避免初始化錯誤
+             appInstance = appModule.initializeApp({ apiKey: "demo-key", projectId: "demo-project" });
           }
+          
+          // 傳遞初始化後的 app 實例，而非模組本身
+          window.fbApp = appInstance; 
+          window.fbAuth = authModule;
+          window.fbFs = fsModule;
+          
           setModulesLoaded(true);
         }).catch(err => {
           console.error("Firebase 載入失敗:", err);
