@@ -34,7 +34,7 @@
       content: ''; display: block; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
       border: 4px solid #4ade80; border-radius: inherit; animation: pulse-ring 1.5s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
     }
-    .card-shadow { box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1); }
+    .card-shadow { box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1); }
   </style>
 </head>
 <body class="bg-stone-200 overflow-hidden">
@@ -57,7 +57,10 @@
       measurementId: "G-0M2EJ9FTQ3"
     };
 
-    // --- 遊戲核心邏輯 ---
+    // --- 遊戲邏輯函式 ---
+    const COLORS = ['text-red-600', 'text-blue-600', 'text-gray-900', 'text-yellow-600'];
+    const BORDER_COLORS = ['border-red-600', 'border-blue-600', 'border-gray-900', 'border-yellow-600'];
+
     const generateDeck = () => {
       let newDeck = [];
       let idCounter = 1;
@@ -77,13 +80,10 @@
       return newDeck;
     };
 
-    const COLORS = ['text-red-600', 'text-blue-600', 'text-gray-900', 'text-yellow-600'];
-    const BORDER_COLORS = ['border-red-600', 'border-blue-600', 'border-gray-900', 'border-yellow-600'];
-
     const isValidSet = (tiles) => {
       if (!tiles || tiles.length < 3) return false;
       const regulars = tiles.filter(t => !t.isJoker);
-      if (regulars.length === 0) return true; // 全百搭暫視為合規
+      if (regulars.length === 0) return true;
       if (regulars.length === 1) return true;
       
       const isGroup = () => {
@@ -157,6 +157,7 @@
       return foundSets;
     };
 
+    // --- UI 元件 ---
     const Tile = ({ tile, onClick, isStaged, invalid }) => {
       const colorClass = tile.isJoker ? 'text-purple-600' : COLORS[tile.colorIdx];
       const borderClass = tile.isJoker ? 'border-purple-600' : BORDER_COLORS[tile.colorIdx];
@@ -220,7 +221,7 @@
         }
       }, [roomData?.turn, gameState === 'playing']);
 
-      // 電腦 AI 邏輯 (由房主處理)
+      // 電腦 AI 邏輯
       useEffect(() => {
         if (gameState === 'playing' && roomData?.status === 'playing' && roomData.players[roomData.turn]?.isBot && roomData.hostId === user.uid) {
           const botTimer = setTimeout(async () => {
@@ -229,7 +230,6 @@
             let newHand = [...(bot.hand || [])];
             let playedSomething = false;
 
-            // 1. 找新組合
             const foundSets = findValidSetsFromHand(newHand);
             if (foundSets.length > 0) {
               const score = foundSets.reduce((s, set) => s + getSetValue(set), 0);
@@ -242,8 +242,8 @@
               }
             }
 
-            // 2. 困難等級：嘗試接龍 (困難模式專屬)
-            if (difficulty === 'hard' && (bot.hasIceBroken || playedSomething)) {
+            // 困難模式：嘗試把手牌接到桌面的組合
+            if ((bot.hasIceBroken || playedSomething)) {
               let changed = true;
               while (changed) {
                 changed = false;
@@ -254,8 +254,7 @@
                     if (isValidSet(testSet)) {
                       newBoard[bIdx] = sortTiles(testSet);
                       newHand.splice(i, 1);
-                      changed = true;
-                      playedSomething = true;
+                      changed = true; playedSomething = true;
                       break;
                     }
                   }
@@ -263,7 +262,6 @@
               }
             }
 
-            // 3. 抽牌或結束
             if (!playedSomething && roomData.deck && roomData.deck.length > 0) {
               newHand.push(roomData.deck[roomData.deck.length - 1]);
             }
@@ -278,20 +276,21 @@
               deck: !playedSomething && roomData.deck ? roomData.deck.slice(0, -1) : (roomData.deck || []),
               turn: (roomData.turn + 1) % roomData.players.length
             });
-          }, 2000);
+          }, 2500);
           return () => clearTimeout(botTimer);
         }
-      }, [roomData?.turn, gameState, user?.uid, difficulty]);
+      }, [roomData?.turn, gameState, user?.uid]);
 
+      // --- 功能處理 ---
       const handleCreateRoom = async () => {
         if (!playerName.trim() || isProcessing) return;
-        setIsProcessing(true);
+        setIsProcessing(true); setMenuError('');
         const code = Math.random().toString(36).substring(2, 6).toUpperCase();
         try {
           await set(ref(db, 'rooms/' + code), {
-            hostId: user.uid, status: 'waiting',
+            hostId: user.uid, status: 'waiting', difficulty: 'hard',
             players: [{ id: user.uid, name: playerName, hand: [], hasIceBroken: false, isBot: false }],
-            board: [], deck: [], turn: 0, difficulty, createdAt: new Date().toISOString()
+            board: [], deck: [], turn: 0, createdAt: new Date().toISOString()
           });
           setRoomId(code); setGameState('lobby');
         } catch (e) { setMenuError(e.message); }
@@ -300,7 +299,7 @@
 
       const handleJoinRoom = async () => {
         const code = joinCode.trim().toUpperCase();
-        if (!code || !playerName.trim()) return;
+        if (!code || !playerName.trim() || isProcessing) return;
         setIsProcessing(true);
         try {
           const snap = await get(ref(db, 'rooms/' + code));
@@ -314,13 +313,23 @@
         finally { setIsProcessing(false); }
       };
 
+      const handleAddBot = async () => {
+        if (!roomData || (roomData.players || []).length >= 4) return;
+        const players = roomData.players || [];
+        const newPlayers = [...players, {
+          id: 'bot_' + Date.now(),
+          name: `電腦 ${players.filter(p=>p.isBot).length + 1}`,
+          hand: [], hasIceBroken: false, isBot: true
+        }];
+        await update(ref(db, 'rooms/' + roomId), { players: newPlayers });
+      };
+
       const handleStartGame = async () => {
         const deck = generateDeck();
         const players = roomData.players.map(p => ({ ...p, hand: deck.splice(0, 14), hasIceBroken: false }));
         await update(ref(db, 'rooms/' + roomId), { status: 'playing', players, deck, board: [], turn: 0 });
       };
 
-      // --- 手動操作 ---
       const handleHandClick = (t) => {
         if (roomData.players[roomData.turn]?.id !== user.uid) return;
         setLocalHand(localHand.filter(x => x.id !== t.id));
@@ -361,21 +370,17 @@
         const me = roomData.players[meIdx];
         let finalHand = [...localHand], finalIce = me.hasIceBroken;
         const deckCopy = roomData.deck ? [...roomData.deck] : [];
-        
         const isModified = JSON.stringify(localBoard) !== JSON.stringify(backupBoard) || localHand.length !== backupHand.length;
 
         if (!finalIce) {
-          const score = localBoard.reduce((s, set) => s + getSetValue(set), 0) - backupBoard.reduce((s, b) => s + getSetValue(b), 0);
+          const score = localBoard.reduce((s, set) => s + getSetValue(set), 0) - (backupBoard || []).reduce((s, b) => s + getSetValue(b), 0);
           if (score >= 30) finalIce = true;
           else if (isModified) { setMessage("破冰需滿30分"); return; }
         }
 
-        if (!isModified && deckCopy.length > 0) {
-          finalHand.push(deckCopy.pop());
-        }
+        if (!isModified && deckCopy.length > 0) finalHand.push(deckCopy.pop());
 
-        const newPlayers = [...roomData.players];
-        newPlayers[meIdx] = { ...me, hand: finalHand, hasIceBroken: finalIce };
+        const newPlayers = roomData.players.map((p, i) => i === meIdx ? { ...p, hand: finalHand, hasIceBroken: finalIce } : p);
         
         await update(ref(db, 'rooms/' + roomId), {
           players: newPlayers,
@@ -383,36 +388,25 @@
           deck: deckCopy,
           turn: (roomData.turn + 1) % roomData.players.length
         });
+        setMessage('');
       };
 
-      if (gameState === 'auth') return <div className="h-screen flex items-center justify-center font-bold text-stone-400 bg-stone-100">正在準備遊戲環境...</div>;
+      if (gameState === 'auth') return <div className="h-screen flex items-center justify-center font-bold text-stone-400">正在準備環境...</div>;
 
       return (
         <div className="h-[100dvh] max-w-lg mx-auto bg-stone-200 relative overflow-hidden flex flex-col shadow-2xl">
-          
           {gameState === 'menu' && (
             <div className="flex-1 flex flex-col items-center justify-center p-6 bg-stone-100 overflow-y-auto">
               <div className="bg-white p-8 rounded-3xl w-full card-shadow text-center">
-                <h1 className="text-4xl font-black text-stone-800 mb-2">行動拉密</h1>
+                <h1 className="text-4xl font-black text-stone-800 mb-6">行動拉密</h1>
                 {menuError && <div className="mb-4 text-red-500 text-xs font-bold bg-red-50 p-3 rounded-lg border border-red-200">{menuError}</div>}
-                <input type="text" value={playerName} onChange={e=>setPlayerName(e.target.value)} placeholder="你的暱稱" className="w-full px-4 py-3 border-2 rounded-xl mb-6 outline-none focus:border-blue-500" />
+                <input type="text" value={playerName} onChange={e=>setPlayerName(e.target.value)} placeholder="你的暱稱" className="w-full px-4 py-3 border-2 rounded-xl mb-8 outline-none focus:border-blue-500 font-bold" />
                 
-                <div className="mb-6">
-                  <p className="text-xs font-black text-stone-400 mb-2 text-left ml-2">電腦難度</p>
-                  <div className="flex gap-2">
-                    {['easy', 'medium', 'hard'].map(d => (
-                      <button key={d} onClick={()=>setDifficulty(d)} className={`flex-1 py-2 rounded-xl font-bold text-xs ${difficulty === d ? 'bg-stone-800 text-white shadow-lg' : 'bg-stone-100 text-stone-400'}`}>
-                        {d === 'easy' ? '簡單' : d === 'medium' ? '普通' : '困難'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <button disabled={isProcessing} onClick={handleCreateRoom} className="w-full py-4 bg-blue-600 text-white font-black rounded-2xl shadow-lg active:scale-95 mb-6 disabled:bg-stone-300 transition-all">
+                <button disabled={isProcessing} onClick={handleCreateRoom} className="w-full py-4 bg-blue-600 text-white font-black rounded-2xl shadow-lg active:scale-95 mb-6 disabled:bg-stone-300">
                   {isProcessing ? '處理中...' : '建立新房間 (房主)'}
                 </button>
                 <div className="flex gap-2">
-                  <input type="text" value={joinCode} onChange={e=>setJoinCode(e.target.value)} placeholder="代碼" className="flex-1 px-4 py-2 border-2 rounded-xl text-center uppercase font-mono" maxLength={4} />
+                  <input type="text" value={joinCode} onChange={e=>setJoinCode(e.target.value)} placeholder="代碼" className="flex-1 px-4 py-2 border-2 rounded-xl text-center uppercase font-mono font-bold" maxLength={4} />
                   <button onClick={handleJoinRoom} className="px-6 py-2 bg-emerald-500 text-white font-black rounded-xl shadow active:scale-95">加入</button>
                 </div>
               </div>
@@ -425,15 +419,15 @@
                 <button onClick={()=>setRoomId('')} className="text-stone-300 text-xs font-bold mb-4 block underline">← 離開</button>
                 <div className="text-5xl font-black text-blue-600 tracking-widest mb-8 font-mono">{roomId}</div>
                 <div className="text-left mb-8 space-y-2">
-                  {roomData?.players.map(p => (
+                  {(roomData?.players || []).map(p => (
                     <div key={p.id} className="py-3 px-4 bg-stone-50 rounded-2xl font-bold text-stone-700 flex justify-between">
                       <span>{p.isBot ? '🤖' : '👤'} {p.name} {p.id === roomData.hostId ? '👑' : ''}</span>
                     </div>
                   ))}
-                  {roomData?.hostId === user.uid && roomData.players.length < 4 && <button onClick={handleAddBot} className="w-full py-2 border-2 border-dashed rounded-xl text-stone-300 font-bold text-xs">+ 加入電腦</button>}
+                  {roomData?.hostId === user.uid && (roomData.players || []).length < 4 && <button onClick={handleAddBot} className="w-full py-2 border-2 border-dashed rounded-xl text-stone-300 font-bold text-xs">+ 加入電腦</button>}
                 </div>
                 {roomData?.hostId === user.uid ? (
-                  <button onClick={handleStartGame} className="w-full py-4 bg-emerald-500 text-white font-black rounded-2xl shadow-lg active:scale-95">開始遊戲</button>
+                  <button onClick={handleStartGame} className="w-full py-4 bg-emerald-500 text-white font-black rounded-2xl shadow-lg">開始遊戲</button>
                 ) : <p className="text-stone-400 animate-pulse font-bold">等待房主開始...</p>}
               </div>
             </div>
@@ -468,7 +462,7 @@
 
                 {roomData.players[roomData.turn]?.id === user.uid && (
                    <div className="bg-blue-50 border-t-2 border-blue-100 p-3 min-h-[90px] relative flex flex-col items-center shrink-0">
-                      <div className="text-[8px] font-black text-blue-300 absolute top-1 left-2 uppercase tracking-widest">暫存區 (組合完成後再出牌)</div>
+                      <div className="text-[8px] font-black text-blue-300 absolute top-1 left-2 uppercase tracking-widest">暫存區</div>
                       <div className="flex gap-1 overflow-x-auto hide-scrollbar max-w-full mb-2">
                         {staging.map(t => <Tile key={t.id} tile={t} onClick={() => {
                           if(t.source === 'hand') setLocalHand(sortTiles([...localHand, t]));
@@ -499,16 +493,6 @@
                    <div className="flex flex-wrap gap-1 justify-center max-h-36 overflow-y-auto">
                       {localHand.map(t => <Tile key={t.id} tile={t} onClick={() => handleHandClick(t)} />)}
                    </div>
-                </div>
-             </div>
-          )}
-
-          {gameState === 'gameover' && roomData?.status === 'gameover' && (
-             <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-[100] p-6">
-                <div className="bg-white p-8 rounded-3xl text-center shadow-2xl w-full">
-                   <h2 className="text-2xl font-black text-stone-800 mb-4">遊戲結束！</h2>
-                   <p className="text-stone-500 mb-8 font-bold">恭喜獲得勝利！</p>
-                   <button onClick={()=>window.location.reload()} className="w-full py-4 bg-blue-600 text-white font-black rounded-2xl">回主畫面</button>
                 </div>
              </div>
           )}
