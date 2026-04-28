@@ -15,13 +15,12 @@
   <!-- 載入 Babel -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <!-- 原生方式載入 Firebase，避開 Babel 轉換錯誤 -->
+  <!-- 原生方式載入 Firebase -->
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
     import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
     import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
-    // 把模組掛載到 window，讓 React 可以順利取得
     window.FirebaseModules = {
       initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
       getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot
@@ -41,7 +40,7 @@
     const { useState, useEffect, useMemo, useRef } = React;
 
     // ==========================================
-    // ⚠️ 請在這裡填入你的 Firebase 設定 ⚠️
+    // 你的 Firebase 設定
     // ==========================================
     const MY_FIREBASE_CONFIG = {
       apiKey: "AIzaSyB-JKAKg3SRs60w6n4z6QA94V33RCBfvfM",
@@ -298,29 +297,17 @@
       const [backupBoard, setBackupBoard] = useState([]);
       const [backupHand, setBackupHand] = useState([]);
 
-      const appId = typeof __app_id !== 'undefined' ? __app_id : 'rummikub-a2452';
+      const appId = MY_FIREBASE_CONFIG.projectId || 'rummikub-a2452';
       const db = useMemo(() => getFirestore(fbApp), [fbApp, getFirestore]);
       const auth = useMemo(() => getAuth(fbApp), [fbApp, getAuth]);
 
       useEffect(() => {
         const initAuth = async () => {
           try {
-            const hasManualConfig = Object.keys(MY_FIREBASE_CONFIG).length > 0 && MY_FIREBASE_CONFIG.apiKey;
-            
-            // 如果提供了手動設定，則系統權杖 (__initial_auth_token) 通常無法在自訂專案上使用
-            if (!hasManualConfig && typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-              await signInWithCustomToken(auth, __initial_auth_token);
-            } else {
-              await signInAnonymously(auth);
-            }
+            await signInAnonymously(auth);
           } catch (err) {
             console.error("Auth error:", err);
-            // 發生權杖錯誤或其他配置錯誤時，強制嘗試匿名登入
-            try {
-              await signInAnonymously(auth);
-            } catch (innerErr) {
-              setMenuError("身分驗證系統無法啟動，請確保已在 Firebase 控制台啟用『匿名登入』。");
-            }
+            setMenuError("身分驗證失敗，請確保 Firebase 匿名登入已開啟。");
           }
         };
         initAuth();
@@ -330,7 +317,7 @@
           if (currentUser) setGameState('menu');
         });
         return () => unsubscribe();
-      }, [auth, signInAnonymously, signInWithCustomToken, onAuthStateChanged]);
+      }, [auth, onAuthStateChanged]);
 
       useEffect(() => {
         if (!user || !roomId) return;
@@ -348,12 +335,13 @@
                setGameState('gameover');
             }
           } else {
-            setMenuError("房間已被解散");
+            setMenuError("房間已被解散或不存在。");
             setGameState('menu');
             setRoomId('');
           }
         }, (error) => {
-          console.error(error);
+          console.error("Snapshot error:", error);
+          setMenuError("資料庫連線中斷: " + error.message);
         });
 
         return () => unsubscribe();
@@ -433,40 +421,44 @@
               let newDeck = [...roomData.deck];
               let newPlayers = JSON.parse(JSON.stringify(roomData.players));
 
-              if (playedSomething) {
-                newPlayers[roomData.turn] = { ...currentTurnPlayer, hand: newHand, hasIceBroken: true };
+              try {
+                if (playedSomething) {
+                  newPlayers[roomData.turn] = { ...currentTurnPlayer, hand: newHand, hasIceBroken: true };
 
-                if (newHand.length === 0) {
+                  if (newHand.length === 0) {
+                    await updateDoc(roomRef, {
+                      board: newBoard, players: newPlayers, status: 'gameover', winnerId: currentTurnPlayer.id
+                    });
+                    return;
+                  }
+
+                  const nextTurn = (roomData.turn + 1) % roomData.players.length;
                   await updateDoc(roomRef, {
-                    board: newBoard, players: newPlayers, status: 'gameover', winnerId: currentTurnPlayer.id
+                    board: newBoard, players: newPlayers, turn: nextTurn, passCount: 0
                   });
-                  return;
-                }
 
-                const nextTurn = (roomData.turn + 1) % roomData.players.length;
-                await updateDoc(roomRef, {
-                  board: newBoard, players: newPlayers, turn: nextTurn, passCount: 0
-                });
+                } else {
+                  if (newDeck.length > 0) {
+                    const drawnTile = newDeck.pop();
+                    newHand.push(drawnTile);
+                  }
+                  newPlayers[roomData.turn] = { ...currentTurnPlayer, hand: newHand };
 
-              } else {
-                if (newDeck.length > 0) {
-                  const drawnTile = newDeck.pop();
-                  newHand.push(drawnTile);
-                }
-                newPlayers[roomData.turn] = { ...currentTurnPlayer, hand: newHand };
+                  let newPassCount = roomData.passCount + 1;
+                  if (newDeck.length === 0 && newPassCount >= roomData.players.length) {
+                    await updateDoc(roomRef, {
+                      board: newBoard, players: newPlayers, status: 'gameover', isStalemate: true
+                    });
+                    return;
+                  }
 
-                let newPassCount = roomData.passCount + 1;
-                if (newDeck.length === 0 && newPassCount >= roomData.players.length) {
+                  const nextTurn = (roomData.turn + 1) % roomData.players.length;
                   await updateDoc(roomRef, {
-                    board: newBoard, players: newPlayers, status: 'gameover', isStalemate: true
+                    board: newBoard, players: newPlayers, deck: newDeck, turn: nextTurn, passCount: newPassCount
                   });
-                  return;
                 }
-
-                const nextTurn = (roomData.turn + 1) % roomData.players.length;
-                await updateDoc(roomRef, {
-                  board: newBoard, players: newPlayers, deck: newDeck, turn: nextTurn, passCount: newPassCount
-                });
+              } catch (e) {
+                console.error("AI turn update error", e);
               }
             }, 1800);
             return () => clearTimeout(timer);
@@ -476,18 +468,25 @@
 
       const createRoom = async () => {
         if (!playerName.trim()) { setMenuError('請輸入暱稱'); return; }
+        if (!user) { setMenuError('尚未登入，請稍候...'); return; }
+        
         const code = Math.random().toString(36).substring(2, 6).toUpperCase();
         const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', code);
         
-        await setDoc(roomRef, {
-          hostId: user.uid, status: 'waiting',
-          players: [{ id: user.uid, name: playerName, hand: [], hasIceBroken: false, isBot: false }],
-          board: [], deck: [], turn: 0, passCount: 0
-        });
-        
-        setRoomId(code);
-        setGameState('lobby');
-        setMenuError('');
+        try {
+          await setDoc(roomRef, {
+            hostId: user.uid, status: 'waiting',
+            players: [{ id: user.uid, name: playerName, hand: [], hasIceBroken: false, isBot: false }],
+            board: [], deck: [], turn: 0, passCount: 0
+          });
+          
+          setRoomId(code);
+          setGameState('lobby');
+          setMenuError('');
+        } catch (err) {
+          console.error("Create room error:", err);
+          setMenuError("無法建立房間: " + err.message + "。請確保 Firestore 已啟用並設定為測試模式。");
+        }
       };
 
       const addBot = async () => {
@@ -498,35 +497,45 @@
           name: `電腦 ${botCount + 1}`, hand: [], hasIceBroken: false, isBot: true
         };
         const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        await updateDoc(roomRef, { players: [...roomData.players, newBot] });
+        try {
+          await updateDoc(roomRef, { players: [...roomData.players, newBot] });
+        } catch (e) { setMenuError("操作失敗: " + e.message); }
       };
 
       const removePlayer = async (targetId) => {
          const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-         await updateDoc(roomRef, { players: roomData.players.filter(p => p.id !== targetId) });
+         try {
+           await updateDoc(roomRef, { players: roomData.players.filter(p => p.id !== targetId) });
+         } catch (e) { setMenuError("操作失敗: " + e.message); }
       };
 
       const joinRoom = async () => {
         if (!playerName.trim()) { setMenuError('請輸入暱稱'); return; }
+        if (!user) { setMenuError('尚未登入，請稍候...'); return; }
         const code = joinCodeInput.trim().toUpperCase();
         if (!code) { setMenuError('請輸入代碼'); return; }
 
         const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', code);
-        const snap = await getDoc(roomRef);
+        try {
+          const snap = await getDoc(roomRef);
 
-        if (!snap.exists()) { setMenuError('找不到這間房'); return; }
+          if (!snap.exists()) { setMenuError('找不到這間房，請檢查代碼。'); return; }
 
-        const data = snap.data();
-        if (data.status !== 'waiting') { setMenuError('遊戲已經開始或結束了'); return; }
-        if (data.players.length >= 4) { setMenuError('房間已滿'); return; }
-        if (data.players.some(p => p.id === user.uid)) {
-          setRoomId(code); setGameState('lobby'); return;
+          const data = snap.data();
+          if (data.status !== 'waiting') { setMenuError('遊戲已經開始或結束了。'); return; }
+          if (data.players.length >= 4) { setMenuError('房間已滿。'); return; }
+          
+          if (data.players.some(p => p.id === user.uid)) {
+            setRoomId(code); setGameState('lobby'); return;
+          }
+
+          const newPlayers = [...data.players, { id: user.uid, name: playerName, hand: [], hasIceBroken: false, isBot: false }];
+          await updateDoc(roomRef, { players: newPlayers });
+          
+          setRoomId(code); setGameState('lobby'); setMenuError('');
+        } catch (err) {
+          setMenuError("加入失敗: " + err.message);
         }
-
-        const newPlayers = [...data.players, { id: user.uid, name: playerName, hand: [], hasIceBroken: false, isBot: false }];
-        await updateDoc(roomRef, { players: newPlayers });
-        
-        setRoomId(code); setGameState('lobby'); setMenuError('');
       };
 
       const startMultiplayerGame = async () => {
@@ -543,7 +552,9 @@
           return { ...p, hand, hasIceBroken: false };
         });
 
-        await updateDoc(roomRef, { status: 'playing', players: updatedPlayers, deck: fullDeck, board: [], turn: 0, passCount: 0 });
+        try {
+          await updateDoc(roomRef, { status: 'playing', players: updatedPlayers, deck: fullDeck, board: [], turn: 0, passCount: 0 });
+        } catch (e) { setMenuError("啟動失敗: " + e.message); }
       };
 
       const hintTileIds = useMemo(() => {
@@ -564,7 +575,7 @@
           });
         }
         return Array.from(ids);
-      }, [showHints, gameState, localHand, localBoard, roomData, user]);
+      }, [showHints, gameState, localHand, localBoard, roomData, user?.uid]);
 
       const showLocalMessage = (msg) => {
         setMessage(msg);
@@ -633,12 +644,13 @@
            const myIdx = newPlayers.findIndex(p => p.id === user.uid);
            if (myIdx > -1) {
               newPlayers[myIdx].hand = sortedHand;
-              updateDoc(roomRef, { players: newPlayers });
+              updateDoc(roomRef, { players: newPlayers }).catch(() => {});
            }
         }
       };
 
       const endTurn = async () => {
+        if (!user) return;
         if (staging.length > 0) { showLocalMessage('暫存區還有牌！請將它們放到桌上，或退回手牌。'); return; }
         const invalidSets = localBoard.filter(set => !isValidSet(set));
         if (invalidSets.length > 0) { showLocalMessage('桌面上包含不合法的牌組 (必須為同數字不同色，或同色連續數字，且大於3張)。'); return; }
@@ -647,7 +659,7 @@
         const me = roomData.players[meIdx];
         let isHandChanged = localHand.length !== backupHand.length;
         let finalBoard = localBoard;
-        let finalHand = localHand;
+        let finalHand = [...localHand];
         let isIceBrokenNow = me.hasIceBroken;
         let needsPenaltyDraw = false;
 
@@ -658,7 +670,7 @@
 
           if (scoreAdded > 0 && scoreAdded < 30) {
             showLocalMessage(`破冰失敗！總合為 ${scoreAdded} 分，需要 30 分以上。已重設並罰抽牌。`);
-            finalBoard = backupBoard; finalHand = backupHand;
+            finalBoard = backupBoard; finalHand = [...backupHand];
             needsPenaltyDraw = true; isHandChanged = false; 
           } else if (scoreAdded >= 30) {
             isIceBrokenNow = true; isHandChanged = true;
@@ -672,37 +684,44 @@
         let didPlayTiles = !didNothing && !needsPenaltyDraw;
 
         if (didNothing || needsPenaltyDraw) {
-          if (newDeck.length > 0) finalHand = [...finalHand, newDeck.pop()];
+          if (newDeck.length > 0) finalHand.push(newDeck.pop());
         }
 
         newPlayers[meIdx] = { ...me, hand: finalHand, hasIceBroken: isIceBrokenNow };
         
-        if (finalHand.length === 0) {
-          await updateDoc(roomRef, { board: finalBoard, players: newPlayers, status: 'gameover', winnerId: user.uid });
-          return;
-        }
+        try {
+          if (finalHand.length === 0) {
+            await updateDoc(roomRef, { board: finalBoard, players: newPlayers, status: 'gameover', winnerId: user.uid });
+            return;
+          }
 
-        let newPassCount = didPlayTiles ? 0 : roomData.passCount + 1;
-        if (newDeck.length === 0 && newPassCount >= roomData.players.length) {
-          await updateDoc(roomRef, { board: finalBoard, players: newPlayers, status: 'gameover', isStalemate: true });
-          return;
-        }
+          let newPassCount = didPlayTiles ? 0 : roomData.passCount + 1;
+          if (newDeck.length === 0 && newPassCount >= roomData.players.length) {
+            await updateDoc(roomRef, { board: finalBoard, players: newPlayers, status: 'gameover', isStalemate: true });
+            return;
+          }
 
-        const nextTurn = (roomData.turn + 1) % roomData.players.length;
-        await updateDoc(roomRef, { board: finalBoard, players: newPlayers, deck: newDeck, turn: nextTurn, passCount: newPassCount });
+          const nextTurn = (roomData.turn + 1) % roomData.players.length;
+          await updateDoc(roomRef, { board: finalBoard, players: newPlayers, deck: newDeck, turn: nextTurn, passCount: newPassCount });
+        } catch (e) {
+          setMenuError("提交失敗: " + e.message);
+        }
       };
 
       const leaveRoom = () => { setGameState('menu'); setRoomId(''); setShowMenu(false); };
 
-      if (gameState === 'auth') return <div className="h-[100dvh] bg-stone-200 flex items-center justify-center font-bold text-gray-500">連線中...</div>;
+      if (gameState === 'auth') return <div className="h-[100dvh] bg-stone-200 flex flex-col items-center justify-center font-bold text-gray-500">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-4 border-blue-600 mb-4"></div>
+        正在連線伺服器...
+      </div>;
 
       if (gameState === 'menu') {
         return (
           <div className="h-[100dvh] bg-stone-100 flex flex-col items-center justify-center p-4">
-            <div className="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+            <div className="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center overflow-y-auto max-h-full">
               <h1 className="text-3xl font-bold mb-2 text-gray-800">行動拉密</h1>
               <p className="text-sm text-gray-500 mb-6">多人連線版</p>
-              {menuError && <div className="mb-4 text-red-500 text-sm font-bold bg-red-50 py-2 rounded">{menuError}</div>}
+              {menuError && <div className="mb-4 text-red-500 text-xs font-bold bg-red-50 p-2 rounded border border-red-200 text-left">{menuError}</div>}
               <div className="mb-6 text-left">
                 <label className="block text-sm font-bold text-gray-700 mb-1">你的暱稱</label>
                 <input type="text" value={playerName} onChange={(e) => setPlayerName(e.target.value)} placeholder="輸入暱稱" className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
@@ -715,13 +734,13 @@
                   <button onClick={() => setDifficulty('hard')} className={`flex-1 py-2 rounded font-bold text-sm ${difficulty === 'hard' ? 'bg-red-500 text-white' : 'bg-gray-200 text-gray-600'}`}>困難</button>
                 </div>
               </div>
-              <button onClick={createRoom} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg transition-colors shadow mb-4">建立新房間 (當房主)</button>
+              <button onClick={createRoom} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg transition-colors shadow mb-4 active:scale-95">建立新房間 (當房主)</button>
               <div className="flex items-center gap-2 my-4">
                 <div className="h-px bg-gray-300 flex-1"></div><span className="text-xs text-gray-400 font-bold">或者</span><div className="h-px bg-gray-300 flex-1"></div>
               </div>
               <div className="flex gap-2">
-                <input type="text" value={joinCodeInput} onChange={(e) => setJoinCodeInput(e.target.value)} placeholder="輸入房間代碼" maxLength={4} className="flex-1 px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-center uppercase tracking-widest font-bold" />
-                <button onClick={joinRoom} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow">加入</button>
+                <input type="text" value={joinCodeInput} onChange={(e) => setJoinCodeInput(e.target.value)} placeholder="代碼" maxLength={4} className="flex-1 px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-center uppercase tracking-widest font-bold" />
+                <button onClick={joinRoom} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow active:scale-95">加入</button>
               </div>
             </div>
           </div>
@@ -732,10 +751,11 @@
         const isHost = roomData?.hostId === user?.uid;
         return (
           <div className="h-[100dvh] bg-stone-100 flex flex-col items-center justify-center p-4">
-            <div className="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center relative">
+            <div className="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center relative overflow-y-auto max-h-full">
               <button onClick={leaveRoom} className="absolute top-4 left-4 text-gray-400 hover:text-gray-600">← 離開</button>
               <h2 className="text-xl font-bold mb-2 mt-4 text-gray-800">房間代碼</h2>
               <div className="text-4xl font-black text-blue-600 tracking-[0.25em] mb-8 bg-blue-50 py-3 rounded-lg border-2 border-blue-200">{roomId}</div>
+              {menuError && <div className="mb-4 text-red-500 text-xs font-bold bg-red-50 p-2 rounded text-left">{menuError}</div>}
               <div className="text-left mb-6">
                 <p className="text-sm font-bold text-gray-500 mb-2 border-b pb-1">已加入玩家 ({roomData?.players?.length || 0}/4)</p>
                 <ul className="space-y-2 mb-4">
@@ -743,7 +763,7 @@
                     <li key={p.id} className="flex items-center justify-between bg-gray-50 p-2 rounded">
                       <div className="flex items-center gap-2">
                          <span className="w-6 h-6 rounded-full bg-gray-300 flex items-center justify-center text-xs font-bold text-gray-600">{idx+1}</span>
-                         <span className="font-bold text-gray-700">{p.name} {p.id === roomData.hostId ? '👑' : ''} {p.id === user?.uid ? '(你)' : ''}</span>
+                         <span className="font-bold text-gray-700 truncate max-w-[150px]">{p.name} {p.id === roomData.hostId ? '👑' : ''} {p.id === user?.uid ? '(你)' : ''}</span>
                       </div>
                       {isHost && (p.isBot || p.id !== user.uid) && <button onClick={() => removePlayer(p.id)} className="text-red-400 hover:text-red-600 font-bold px-2">X</button>}
                     </li>
@@ -751,14 +771,14 @@
                 </ul>
                 {isHost && roomData?.players?.length < 4 && <button onClick={addBot} className="text-sm bg-blue-100 hover:bg-blue-200 text-blue-700 font-bold py-2 px-4 rounded w-full border border-blue-200 transition-colors">+ 加入電腦對手</button>}
               </div>
-              {isHost ? <button onClick={startMultiplayerGame} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors">開始遊戲</button>
+              {isHost ? <button onClick={startMultiplayerGame} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors active:scale-95">開始遊戲</button>
                       : <p className="text-gray-500 font-bold animate-pulse">等待房主開始遊戲...</p>}
             </div>
           </div>
         );
       }
 
-      const me = roomData?.players?.find(p => p.id === user?.uid);
+      const mePlayer = roomData?.players?.find(p => p.id === user?.uid);
       const isMyTurn = roomData?.status === 'playing' && roomData?.players[roomData?.turn]?.id === user?.uid;
       const currentTurnPlayer = roomData?.players[roomData?.turn];
 
@@ -862,7 +882,7 @@
             <div className="flex justify-between items-end mb-2 gap-2">
               <div className="flex flex-col gap-1 pointer-events-auto">
                  <div className="text-[10px] font-bold text-slate-500">
-                   {me?.hasIceBroken ? <span className="text-green-600">已破冰</span> : <span className="text-red-500">未破冰 (需30分)</span>}
+                   {mePlayer?.hasIceBroken ? <span className="text-green-600">已破冰</span> : <span className="text-red-500">未破冰 (需30分)</span>}
                  </div>
                  <div className="flex gap-1.5">
                   <button onClick={() => sortHand('number')} className="px-2 py-1 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs rounded shadow-sm active:scale-95">123排序</button>
@@ -904,17 +924,23 @@
 
       useEffect(() => {
         const loadFirebase = () => {
+          if (!window.FirebaseModules) return;
           const { initializeApp } = window.FirebaseModules;
           
-          let config = Object.keys(MY_FIREBASE_CONFIG).length > 0 ? MY_FIREBASE_CONFIG : {};
-          if (Object.keys(config).length === 0) {
+          let config = Object.keys(MY_FIREBASE_CONFIG).length > 0 && MY_FIREBASE_CONFIG.apiKey ? MY_FIREBASE_CONFIG : null;
+          if (!config) {
              try { config = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}'); } catch(e) {}
           }
           
-          if (Object.keys(config).length > 0 && config.apiKey) {
-             const appInstance = initializeApp(config);
-             setFbApp(appInstance);
-             setModulesLoaded(true);
+          if (config && config.apiKey) {
+             try {
+               const appInstance = initializeApp(config);
+               setFbApp(appInstance);
+               setModulesLoaded(true);
+             } catch (e) {
+               console.error("Firebase init failed:", e);
+               setConfigError(true);
+             }
           } else {
              setConfigError(true);
           }
@@ -934,9 +960,8 @@
              <div className="bg-white p-8 rounded-xl shadow-lg max-w-md">
                 <h2 className="text-2xl font-bold text-red-600 mb-4">缺少資料庫設定</h2>
                 <p className="text-gray-600 mb-4 text-left leading-relaxed">
-                  你的網頁目前找不到雲端資料庫，所以一直卡在連線中。<br/><br/>
-                  請到 Google Firebase 免費建立一個專案，啟用 <b>Firestore Database</b> 與 <b>Authentication (匿名登入)</b>，然後把你的專案設定碼貼到 index.html 最上面的 <code>MY_FIREBASE_CONFIG</code> 裡面。<br/><br/>
-                  填寫完畢並重新上傳到 GitHub，大家就能連線一起玩囉！
+                  你的網頁目前找不到雲端資料庫。<br/><br/>
+                  請確保你已經將 Firebase 控制台取得的設定碼正確貼入 <code>MY_FIREBASE_CONFIG</code> 變數中，並重新上傳到網頁空間。
                 </p>
              </div>
           </div>
@@ -947,7 +972,7 @@
         return (
            <div className="h-[100dvh] bg-stone-200 flex flex-col items-center justify-center">
               <div className="animate-spin rounded-full h-12 w-12 border-b-4 border-blue-600 mb-4"></div>
-              <p className="font-bold text-gray-500">連線中...</p>
+              <p className="font-bold text-gray-500">正在連線伺服器...</p>
            </div>
         );
       }
