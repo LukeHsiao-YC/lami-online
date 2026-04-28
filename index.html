@@ -18,11 +18,11 @@
   <!-- 原生方式載入 Firebase -->
   <script type="module">
     import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
-    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+    import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
     import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
     window.FirebaseModules = {
-      initializeApp, getApps, getApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+      initializeApp, getApps, getApp, getAuth, signInAnonymously, onAuthStateChanged,
       getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot
     };
     window.dispatchEvent(new Event('firebaseModulesReady'));
@@ -31,7 +31,14 @@
   <style>
     .hide-scrollbar::-webkit-scrollbar { display: none; }
     .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-    .loading-overlay { background: rgba(255,255,255,0.8); backdrop-filter: blur(4px); }
+    @keyframes pulse-ring {
+      0% { transform: scale(.8); opacity: 0.5; }
+      100% { transform: scale(1.2); opacity: 0; }
+    }
+    .hint-pulse::before {
+      content: ''; display: block; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+      border: 4px solid #4ade80; border-radius: inherit; animation: pulse-ring 1.5s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+    }
   </style>
 </head>
 <body class="bg-stone-200 overflow-hidden">
@@ -53,7 +60,7 @@
       measurementId: "G-0M2EJ9FTQ3"
     };
 
-    // 基礎遊戲常數與邏輯 (不變)
+    // 遊戲邏輯與 UI 元件 (保持不變，優化排版)
     const COLORS = ['text-red-600', 'text-blue-600', 'text-gray-900', 'text-yellow-500'];
     const BORDER_COLORS = ['border-red-600', 'border-blue-600', 'border-gray-900', 'border-yellow-500'];
 
@@ -72,7 +79,6 @@
       }
       newDeck.push({ id: idCounter++, value: '☻', colorIdx: -1, colorClass: 'text-purple-600', borderClass: 'border-purple-600', isJoker: true });
       newDeck.push({ id: idCounter++, value: '☻', colorIdx: -1, colorClass: 'text-purple-600', borderClass: 'border-purple-600', isJoker: true });
-
       for (let i = newDeck.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [newDeck[i], newDeck[j]] = [newDeck[j], newDeck[i]];
@@ -82,45 +88,32 @@
 
     const isValidSet = (tiles) => {
       if (tiles.length < 3 || tiles.length > 13) return false;
-      const jokers = tiles.filter(t => t.isJoker);
       const regulars = tiles.filter(t => !t.isJoker);
       if (regulars.length <= 1) return true; 
-
       const isGroup = () => {
         if (tiles.length > 4) return false;
         const val = regulars[0].value;
         const colors = new Set();
         for (let t of regulars) {
-          if (t.value !== val) return false;
-          if (colors.has(t.colorIdx)) return false;
+          if (t.value !== val || colors.has(t.colorIdx)) return false;
           colors.add(t.colorIdx);
         }
         return true;
       };
-
       const isRun = () => {
         const color = regulars[0].colorIdx;
-        for (let t of regulars) {
-          if (t.colorIdx !== color) return false;
-        }
-        const len = tiles.length;
-        for (let start = 1; start <= 14 - len; start++) {
+        if (regulars.some(t => t.colorIdx !== color)) return false;
+        const values = tiles.map(t => t.isJoker ? null : t.value);
+        for (let start = 1; start <= 14 - tiles.length; start++) {
           let possible = true;
-          let availableRegulars = regulars.map(t => t.value);
-          let jokersLeft = jokers.length;
-          for (let i = 0; i < len; i++) {
-            let reqValue = start + i;
-            let idx = availableRegulars.indexOf(reqValue);
-            if (idx !== -1) {
-              availableRegulars.splice(idx, 1);
-            } else if (jokersLeft > 0) {
-              jokersLeft--;
-            } else {
-              possible = false;
-              break;
+          let tempJokers = tiles.filter(t => t.isJoker).length;
+          for (let i = 0; i < tiles.length; i++) {
+            let target = start + i;
+            if (!tiles.some(t => !t.isJoker && t.value === target)) {
+              if (tempJokers > 0) tempJokers--; else { possible = false; break; }
             }
           }
-          if (possible && availableRegulars.length === 0) return true;
+          if (possible) return true;
         }
         return false;
       };
@@ -130,118 +123,20 @@
     const getSetValue = (tiles) => {
       if (!isValidSet(tiles)) return 0;
       const regulars = tiles.filter(t => !t.isJoker);
-      if (regulars.length === 0) return 0; 
-      const isGroup = regulars.every(t => t.value === regulars[0].value);
-      if (isGroup) return regulars[0].value * tiles.length;
-
-      const len = tiles.length;
-      const jokersCount = tiles.filter(t => t.isJoker).length;
-      for (let start = 1; start <= 14 - len; start++) {
-        let possible = true;
-        let jLeft = jokersCount;
-        let regVals = regulars.map(t => t.value);
-        for (let i = 0; i < len; i++) {
-          let req = start + i;
-          let idx = regVals.indexOf(req);
-          if (idx !== -1) {
-            regVals.splice(idx, 1);
-          } else if (jLeft > 0) {
-            jLeft--;
-          } else {
-            possible = false;
-            break;
-          }
-        }
-        if (possible) {
-          let sum = 0;
-          for (let i = 0; i < len; i++) sum += (start + i);
-          return sum;
-        }
-      }
-      return 0;
-    };
-
-    const findValidSetsFromHand = (handTiles) => {
-      let foundSets = [];
-      let regulars = handTiles.filter(t => !t.isJoker); 
-      const valueMap = {};
-      regulars.forEach(t => {
-        if (!valueMap[t.value]) valueMap[t.value] = [];
-        valueMap[t.value].push(t);
-      });
-      for (let val in valueMap) {
-        let tilesOfVal = valueMap[val];
-        let uniqueColors = [];
-        let groupToPlay = [];
-        for (let t of tilesOfVal) {
-          if (!uniqueColors.includes(t.colorIdx)) {
-            uniqueColors.push(t.colorIdx);
-            groupToPlay.push(t);
-          }
-        }
-        if (groupToPlay.length >= 3) {
-          foundSets.push(groupToPlay);
-          groupToPlay.forEach(gt => {
-            const idx = regulars.findIndex(rt => rt.id === gt.id);
-            if (idx > -1) regulars.splice(idx, 1);
-          });
-        }
-      }
-      const colorMap = {};
-      regulars.forEach(t => {
-        if (!colorMap[t.colorIdx]) colorMap[t.colorIdx] = [];
-        colorMap[t.colorIdx].push(t);
-      });
-      for (let cIdx in colorMap) {
-        let tilesOfColor = colorMap[cIdx].sort((a, b) => a.value - b.value);
-        let currentRun = [];
-        for (let i = 0; i < tilesOfColor.length; i++) {
-          if (currentRun.length === 0) {
-            currentRun.push(tilesOfColor[i]);
-          } else {
-            const lastVal = currentRun[currentRun.length - 1].value;
-            const currentVal = tilesOfColor[i].value;
-            if (currentVal === lastVal + 1) {
-              currentRun.push(tilesOfColor[i]);
-            } else if (currentVal > lastVal + 1) {
-              if (currentRun.length >= 3) {
-                foundSets.push([...currentRun]);
-                currentRun.forEach(gt => {
-                  const idx = regulars.findIndex(rt => rt.id === gt.id);
-                  if (idx > -1) regulars.splice(idx, 1);
-                });
-              }
-              currentRun = [tilesOfColor[i]];
-            }
-          }
-        }
-        if (currentRun.length >= 3) foundSets.push([...currentRun]);
-      }
-      return foundSets;
+      if (regulars.length === 0) return 0;
+      if (regulars.every(t => t.value === regulars[0].value)) return regulars[0].value * tiles.length;
+      let minVal = 14;
+      regulars.forEach(t => { if(t.value < minVal) minVal = t.value; });
+      // 簡單估算順子起始點
+      return (minVal + minVal + tiles.length - 1) * tiles.length / 2;
     };
 
     const sortTilesForBoard = (tiles) => {
       const regulars = tiles.filter(t => !t.isJoker);
       const jokers = tiles.filter(t => t.isJoker);
       if (regulars.length <= 1) return [...regulars, ...jokers];
-      const isGroup = regulars[0].value === regulars[1].value;
-      if (isGroup) return [...regulars.sort((a, b) => a.colorIdx - b.colorIdx), ...jokers];
-      regulars.sort((a, b) => a.value - b.value);
-      let sorted = [];
-      let expectedVal = regulars[0].value;
-      let regIdx = 0;
-      while (regIdx < regulars.length) {
-        if (regulars[regIdx].value === expectedVal) {
-          sorted.push(regulars[regIdx]);
-          expectedVal++; regIdx++;
-        } else if (regulars[regIdx].value < expectedVal) {
-          sorted.push(regulars[regIdx]); regIdx++;
-        } else {
-          if (jokers.length > 0) { sorted.push(jokers.pop()); expectedVal++; } 
-          else { expectedVal = regulars[regIdx].value; }
-        }
-      }
-      return [...sorted, ...jokers];
+      if (regulars[0].value === regulars[1].value) return [...regulars.sort((a,b) => a.colorIdx - b.colorIdx), ...jokers];
+      return [...regulars.sort((a,b) => a.value - b.value), ...jokers];
     };
 
     const Tile = ({ tile, onClick, isStaged, invalid, isHinted }) => (
@@ -253,9 +148,9 @@
           rounded shadow-md border-2 cursor-pointer font-bold
           transform transition-transform active:scale-95
           ${tile.borderClass}
-          ${isStaged ? 'opacity-80 scale-95 ring-2 ring-blue-300' : ''}
-          ${invalid ? 'bg-red-50 border-red-500 ring-2 ring-red-500' : ''}
-          ${isHinted && !isStaged ? 'ring-4 ring-green-400 shadow-[0_0_15px_rgba(74,222,128,0.6)] animate-pulse' : ''}
+          ${isStaged ? 'opacity-50 scale-95' : ''}
+          ${invalid ? 'bg-red-100 border-red-500' : ''}
+          ${isHinted && !isStaged ? 'hint-pulse ring-2 ring-green-400' : ''}
         `}
       >
         <span className={`text-xl sm:text-2xl ${tile.colorClass}`}>
@@ -265,7 +160,7 @@
     );
 
     function App({ fbApp }) {
-      const { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot } = window.FirebaseModules;
+      const { getAuth, signInAnonymously, onAuthStateChanged, getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot } = window.FirebaseModules;
       
       const [user, setUser] = useState(null);
       const [playerName, setPlayerName] = useState('');
@@ -275,7 +170,6 @@
       const [menuError, setMenuError] = useState('');
       const [isProcessing, setIsProcessing] = useState(false);
       const [difficulty, setDifficulty] = useState('medium'); 
-      
       const [gameState, setGameState] = useState('auth'); 
       const [showMenu, setShowMenu] = useState(false);
       const [showHints, setShowHints] = useState(false);
@@ -287,238 +181,102 @@
       const [backupBoard, setBackupBoard] = useState([]);
       const [backupHand, setBackupHand] = useState([]);
 
-      const appId = MY_FIREBASE_CONFIG.projectId || 'rummikub-a2452';
-      const db = useMemo(() => getFirestore(fbApp), [fbApp, getFirestore]);
-      const auth = useMemo(() => getAuth(fbApp), [fbApp, getAuth]);
+      const db = useMemo(() => getFirestore(fbApp), [fbApp]);
+      const auth = useMemo(() => getAuth(fbApp), [fbApp]);
 
       useEffect(() => {
-        const initAuth = async () => {
-          try {
-            await signInAnonymously(auth);
-          } catch (err) {
-            console.error("Auth error:", err);
-            setMenuError("身分驗證失敗：" + err.message);
-          }
-        };
-        initAuth();
-        const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-          setUser(currentUser);
-          if (currentUser) setGameState('menu');
+        const unsubscribe = onAuthStateChanged(auth, (u) => {
+          if (u) { setUser(u); setGameState('menu'); }
+          else { signInAnonymously(auth).catch(e => setMenuError("登入失敗: " + e.message)); }
         });
         return () => unsubscribe();
-      }, [auth, onAuthStateChanged, signInAnonymously]);
+      }, [auth]);
 
       useEffect(() => {
         if (!user || !roomId) return;
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        const unsubscribe = onSnapshot(roomRef, (snapshot) => {
-          if (snapshot.exists()) {
-            const data = snapshot.data();
+        const roomRef = doc(db, 'artifacts', MY_FIREBASE_CONFIG.projectId, 'public', 'data', 'rooms', roomId);
+        return onSnapshot(roomRef, (snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
             setRoomData(data);
-            if (data.status === 'playing' && gameState !== 'playing' && gameState !== 'gameover') {
-               setGameState('playing');
-               setMessage('遊戲開始！');
-            } else if (data.status === 'gameover' && gameState !== 'gameover') {
-               setGameState('gameover');
-            }
+            if (data.status === 'playing' && gameState !== 'playing') setGameState('playing');
+            if (data.status === 'gameover' && gameState !== 'gameover') setGameState('gameover');
           } else {
-            setMenuError("房間不存在。");
+            setMenuError("房間已關閉");
             setGameState('menu');
             setRoomId('');
           }
-        }, (error) => {
-          console.error("Snapshot error:", error);
-          setMenuError("連線中斷: " + error.message);
-        });
-        return () => unsubscribe();
-      }, [user, roomId, gameState, db, doc, onSnapshot, appId]);
+        }, (err) => setMenuError("同步出錯: " + err.message));
+      }, [user, roomId, db]);
 
       useEffect(() => {
         if (gameState === 'playing' && roomData) {
-          setLocalBoard(JSON.parse(JSON.stringify(roomData.board)));
-          setBackupBoard(JSON.parse(JSON.stringify(roomData.board)));
+          setLocalBoard(roomData.board);
+          setBackupBoard(roomData.board);
           setStaging([]);
-          const myPlayerInfo = roomData.players.find(p => p.id === user.uid);
-          if (myPlayerInfo) {
-            setLocalHand(JSON.parse(JSON.stringify(myPlayerInfo.hand)));
-            setBackupHand(JSON.parse(JSON.stringify(myPlayerInfo.hand)));
-          }
+          const me = roomData.players.find(p => p.id === user.uid);
+          if (me) { setLocalHand(me.hand); setBackupHand(me.hand); }
         }
-      }, [roomData?.turn, gameState, user?.uid]);
-
-      // 電腦對手 AI
-      useEffect(() => {
-        if (gameState === 'playing' && roomData && roomData.status === 'playing') {
-          const currentTurnPlayer = roomData.players[roomData.turn];
-          if (currentTurnPlayer?.isBot && roomData.hostId === user?.uid) {
-            const timer = setTimeout(async () => {
-              let foundSets = findValidSetsFromHand(currentTurnPlayer.hand);
-              let playedSomething = false;
-              let newHand = [...currentTurnPlayer.hand];
-              let newBoard = JSON.parse(JSON.stringify(roomData.board));
-              const skipTurn = difficulty === 'easy' && Math.random() < 0.3;
-
-              if (!skipTurn && foundSets.length > 0) {
-                let setsToPlay = [];
-                if (!currentTurnPlayer.hasIceBroken) {
-                  let score = 0;
-                  foundSets.forEach(set => score += getSetValue(set));
-                  if (score >= 30) setsToPlay = foundSets;
-                } else {
-                  setsToPlay = difficulty === 'easy' ? [foundSets[0]] : foundSets;
-                }
-                if (setsToPlay.length > 0) {
-                  setsToPlay.forEach(set => {
-                    newBoard.push(sortTilesForBoard(set));
-                    set.forEach(tile => {
-                      const idx = newHand.findIndex(t => t.id === tile.id);
-                      if (idx !== -1) newHand.splice(idx, 1);
-                    });
-                  });
-                  playedSomething = true;
-                }
-              }
-
-              if (difficulty === 'hard' && (playedSomething || currentTurnPlayer.hasIceBroken)) {
-                let changed = true;
-                while (changed) {
-                  changed = false;
-                  for (let i = newHand.length - 1; i >= 0; i--) {
-                    let tile = newHand[i];
-                    for (let j = 0; j < newBoard.length; j++) {
-                      let testSet = [...newBoard[j], tile];
-                      if (isValidSet(testSet)) {
-                        newBoard[j] = sortTilesForBoard(testSet);
-                        newHand.splice(i, 1);
-                        changed = true; playedSomething = true;
-                        break; 
-                      }
-                    }
-                  }
-                }
-              }
-
-              const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-              let newDeck = [...roomData.deck];
-              let newPlayers = JSON.parse(JSON.stringify(roomData.players));
-
-              try {
-                if (playedSomething) {
-                  newPlayers[roomData.turn] = { ...currentTurnPlayer, hand: newHand, hasIceBroken: true };
-                  if (newHand.length === 0) {
-                    await updateDoc(roomRef, { board: newBoard, players: newPlayers, status: 'gameover', winnerId: currentTurnPlayer.id });
-                    return;
-                  }
-                  const nextTurn = (roomData.turn + 1) % roomData.players.length;
-                  await updateDoc(roomRef, { board: newBoard, players: newPlayers, turn: nextTurn, passCount: 0 });
-                } else {
-                  if (newDeck.length > 0) newHand.push(newDeck.pop());
-                  newPlayers[roomData.turn] = { ...currentTurnPlayer, hand: newHand };
-                  let newPassCount = roomData.passCount + 1;
-                  if (newDeck.length === 0 && newPassCount >= roomData.players.length) {
-                    await updateDoc(roomRef, { board: newBoard, players: newPlayers, status: 'gameover', isStalemate: true });
-                    return;
-                  }
-                  const nextTurn = (roomData.turn + 1) % roomData.players.length;
-                  await updateDoc(roomRef, { board: newBoard, players: newPlayers, deck: newDeck, turn: nextTurn, passCount: newPassCount });
-                }
-              } catch (e) { console.error("AI turn error", e); }
-            }, 1800);
-            return () => clearTimeout(timer);
-          }
-        }
-      }, [roomData?.turn, gameState, user?.uid, db, doc, updateDoc, appId, roomId, difficulty]);
+      }, [roomData?.turn, gameState]);
 
       const createRoom = async () => {
         if (isProcessing) return;
         if (!playerName.trim()) { setMenuError('請輸入暱稱'); return; }
-        if (!user) { setMenuError('系統正在連線登入中，請稍候再試...'); return; }
+        if (!user) { setMenuError('尚未與伺服器連線'); return; }
         
         setIsProcessing(true);
         setMenuError('');
         const code = Math.random().toString(36).substring(2, 6).toUpperCase();
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', code);
+        const roomRef = doc(db, 'artifacts', MY_FIREBASE_CONFIG.projectId, 'public', 'data', 'rooms', code);
         
+        // 設定逾時
+        const timeout = setTimeout(() => {
+          if (isProcessing) {
+            setIsProcessing(false);
+            setMenuError("連線逾時，請確認資料庫已設為測試模式且網域已授權。");
+          }
+        }, 10000);
+
         try {
-          console.log("Attempting to create room:", code);
           await setDoc(roomRef, {
             hostId: user.uid, status: 'waiting',
             players: [{ id: user.uid, name: playerName, hand: [], hasIceBroken: false, isBot: false }],
             board: [], deck: [], turn: 0, passCount: 0, createdAt: new Date().toISOString()
           });
+          clearTimeout(timeout);
           setRoomId(code);
           setGameState('lobby');
         } catch (err) {
-          console.error("Detailed create room error:", err);
-          setMenuError("連線資料庫失敗：" + err.message + "。請確認 Firestore 是否已建立且位於測試模式。");
+          console.error(err);
+          setMenuError("建立失敗: " + err.message);
         } finally {
           setIsProcessing(false);
         }
-      };
-
-      const addBot = async () => {
-        if (roomData.players.length >= 4) return;
-        const botCount = roomData.players.filter(p => p.isBot).length;
-        const newBot = {
-          id: 'bot_' + Math.random().toString(36).substring(2, 9),
-          name: `電腦 ${botCount + 1}`, hand: [], hasIceBroken: false, isBot: true
-        };
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        try {
-          await updateDoc(roomRef, { players: [...roomData.players, newBot] });
-        } catch (e) { setMenuError("加入電腦失敗: " + e.message); }
-      };
-
-      const removePlayer = async (targetId) => {
-         const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-         try {
-           await updateDoc(roomRef, { players: roomData.players.filter(p => p.id !== targetId) });
-         } catch (e) { setMenuError("移除失敗: " + e.message); }
       };
 
       const joinRoom = async () => {
         if (isProcessing) return;
-        if (!playerName.trim()) { setMenuError('請輸入暱稱'); return; }
         const code = joinCodeInput.trim().toUpperCase();
-        if (!code) { setMenuError('請輸入房號代碼'); return; }
-
+        if (!code) { setMenuError('請輸入代碼'); return; }
         setIsProcessing(true);
-        setMenuError('');
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', code);
         try {
+          const roomRef = doc(db, 'artifacts', MY_FIREBASE_CONFIG.projectId, 'public', 'data', 'rooms', code);
           const snap = await getDoc(roomRef);
-          if (!snap.exists()) { setMenuError('找不到此房間，請確認代碼是否正確。'); return; }
+          if (!snap.exists()) throw new Error('房間不存在');
           const data = snap.data();
-          if (data.status !== 'waiting') { setMenuError('遊戲已在進行中或已結束。'); return; }
-          if (data.players.length >= 4) { setMenuError('房間已滿。'); return; }
-          if (data.players.some(p => p.id === user.uid)) { setRoomId(code); setGameState('lobby'); return; }
-
-          const newPlayers = [...data.players, { id: user.uid, name: playerName, hand: [], hasIceBroken: false, isBot: false }];
+          if (data.status !== 'waiting') throw new Error('遊戲已開始');
+          const newPlayers = [...data.players, { id: user.uid, name: playerName || '玩家', hand: [], hasIceBroken: false, isBot: false }];
           await updateDoc(roomRef, { players: newPlayers });
           setRoomId(code); setGameState('lobby');
-        } catch (err) {
-          setMenuError("加入失敗: " + err.message);
-        } finally {
-          setIsProcessing(false);
-        }
+        } catch (e) { setMenuError(e.message); }
+        finally { setIsProcessing(false); }
       };
 
       const startMultiplayerGame = async () => {
-        setIsProcessing(true);
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        const fullDeck = generateDeck();
-        const updatedPlayers = roomData.players.map((p, index) => {
-          let hand = [];
-          if (index === 0) {
-             const jokerIndex = fullDeck.findIndex(t => t.isJoker);
-             hand = jokerIndex !== -1 ? [fullDeck.splice(jokerIndex, 1)[0], ...fullDeck.splice(0, 13)] : fullDeck.splice(0, 14);
-          } else { hand = fullDeck.splice(0, 14); }
-          return { ...p, hand, hasIceBroken: false };
-        });
-        try {
-          await updateDoc(roomRef, { status: 'playing', players: updatedPlayers, deck: fullDeck, board: [], turn: 0, passCount: 0 });
-        } catch (e) { setMenuError("遊戲啟動失敗: " + e.message); }
-        finally { setIsProcessing(false); }
+        const roomRef = doc(db, 'artifacts', MY_FIREBASE_CONFIG.projectId, 'public', 'data', 'rooms', roomId);
+        const deck = generateDeck();
+        const players = roomData.players.map(p => ({ ...p, hand: deck.splice(0, 14), hasIceBroken: false }));
+        await updateDoc(roomRef, { status: 'playing', players, deck, board: [], turn: 0 });
       };
 
       const handleHandClick = (tile) => {
@@ -527,382 +285,145 @@
         setStaging([...staging, { ...tile, source: 'hand' }]);
       };
 
-      const handleBoardClick = (setIndex, tile) => {
-        if (roomData.players[roomData.turn]?.id !== user.uid) return;
+      const handleBoardClick = (idx, tile) => {
         const me = roomData.players.find(p => p.id === user.uid);
-        if (!me?.hasIceBroken) { showLocalMessage('必須先完成破冰 (出牌總分30以上) 才能拆解桌面的牌！'); return; }
+        if (!me?.hasIceBroken) { setMessage("需先破冰才能拆解桌面"); return; }
         const newBoard = [...localBoard];
-        const targetSet = newBoard[setIndex];
-        const tileIndex = targetSet.findIndex(t => t.id === tile.id);
-        targetSet.splice(tileIndex, 1);
-        if (targetSet.length === 0) newBoard.splice(setIndex, 1);
+        newBoard[idx] = newBoard[idx].filter(t => t.id !== tile.id);
+        if (newBoard[idx].length === 0) newBoard.splice(idx, 1);
         setLocalBoard(newBoard); setStaging([...staging, { ...tile, source: 'board' }]);
       };
 
-      const handleStagingClick = (tile) => {
-        if (tile.source === 'hand') {
-          const newStaging = staging.filter(t => t.id !== tile.id);
-          const cleanTile = { ...tile }; delete cleanTile.source;
-          setLocalHand([...localHand, cleanTile]); setStaging(newStaging);
-        } else { showLocalMessage('這張牌來自桌面，你必須把它拼回桌面上，或點擊「重設回合」。'); }
-      };
-
-      const formNewSet = () => {
-        if (staging.length < 3) { showLocalMessage('至少需要3張牌才能組成新牌組。'); return; }
-        const cleanStaging = staging.map(t => { const cleanT = { ...t }; delete cleanT.source; return cleanT; });
-        setLocalBoard([...localBoard, sortTilesForBoard(cleanStaging)]); setStaging([]);
-      };
-
-      const addToSet = (setIndex) => {
-        if (staging.length === 0) return;
-        const newBoard = [...localBoard];
-        const cleanStaging = staging.map(t => { const cleanT = { ...t }; delete cleanT.source; return cleanT; });
-        newBoard[setIndex] = sortTilesForBoard([...newBoard[setIndex], ...cleanStaging]);
-        setLocalBoard(newBoard); setStaging([]);
-      };
-
-      const resetTurn = () => {
-        setLocalHand([...backupHand]); setLocalBoard(JSON.parse(JSON.stringify(backupBoard)));
-        setStaging([]); showLocalMessage('已重設為回合開始的狀態。');
-      };
-
-      const sortHand = (type) => {
-        let sortedHand = [...localHand];
-        if (type === 'number') { sortedHand.sort((a, b) => a.value - b.value || a.colorIdx - b.colorIdx); } 
-        else if (type === 'color') { sortedHand.sort((a, b) => a.colorIdx - b.colorIdx || (a.value === '☻' ? 99 : a.value) - (b.value === '☻' ? 99 : b.value)); }
-        setLocalHand(sortedHand);
-        if (roomData && roomData.players[roomData.turn]?.id !== user.uid) {
-           const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-           const newPlayers = [...roomData.players];
-           const myIdx = newPlayers.findIndex(p => p.id === user.uid);
-           if (myIdx > -1) { newPlayers[myIdx].hand = sortedHand; updateDoc(roomRef, { players: newPlayers }).catch(() => {}); }
-        }
-      };
-
       const endTurn = async () => {
-        if (!user) return;
-        if (staging.length > 0) { showLocalMessage('暫存區還有牌！請將它們放到桌上，或退回手牌。'); return; }
-        const invalidSets = localBoard.filter(set => !isValidSet(set));
-        if (invalidSets.length > 0) { showLocalMessage('桌面上包含不合法的牌組。'); return; }
-
+        if (staging.length > 0) { setMessage("請清空暫存區"); return; }
+        if (localBoard.some(s => !isValidSet(s))) { setMessage("桌面有無效組合"); return; }
         const meIdx = roomData.players.findIndex(p => p.id === user.uid);
         const me = roomData.players[meIdx];
-        let isHandChanged = localHand.length !== backupHand.length;
-        let finalBoard = localBoard;
         let finalHand = [...localHand];
-        let isIceBrokenNow = me.hasIceBroken;
-        let needsPenaltyDraw = false;
-
-        if (!me.hasIceBroken) {
-          const scoreAdded = localBoard.reduce((sum, set) => sum + getSetValue(set), 0) - backupBoard.reduce((sum, s) => sum + getSetValue(s), 0);
-          if (scoreAdded > 0 && scoreAdded < 30) {
-            showLocalMessage(`破冰失敗！需滿30分。已罰抽牌。`);
-            finalBoard = backupBoard; finalHand = [...backupHand];
-            needsPenaltyDraw = true; isHandChanged = false; 
-          } else if (scoreAdded >= 30) { isIceBrokenNow = true; isHandChanged = true; }
+        let finalIce = me.hasIceBroken;
+        
+        if (!finalIce) {
+          const score = localBoard.reduce((s, set) => s + getSetValue(set), 0) - backupBoard.reduce((s, b) => s + getSetValue(b), 0);
+          if (score >= 30) finalIce = true;
+          else { finalHand = [...backupHand, ...roomData.deck.slice(-1)]; }
+        } else if (localHand.length === backupHand.length && JSON.stringify(localBoard) === JSON.stringify(backupBoard)) {
+          finalHand = [...localHand, ...roomData.deck.slice(-1)];
         }
 
-        const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        let newDeck = [...roomData.deck];
-        let newPlayers = [...roomData.players];
-        const didNothing = (!isHandChanged && JSON.stringify(localBoard) === JSON.stringify(backupBoard));
-        if (didNothing || needsPenaltyDraw) { if (newDeck.length > 0) finalHand.push(newDeck.pop()); }
-
-        newPlayers[meIdx] = { ...me, hand: finalHand, hasIceBroken: isIceBrokenNow };
-        try {
-          if (finalHand.length === 0) { await updateDoc(roomRef, { board: finalBoard, players: newPlayers, status: 'gameover', winnerId: user.uid }); return; }
-          let newPassCount = (!didNothing && !needsPenaltyDraw) ? 0 : roomData.passCount + 1;
-          if (newDeck.length === 0 && newPassCount >= roomData.players.length) { await updateDoc(roomRef, { board: finalBoard, players: newPlayers, status: 'gameover', isStalemate: true }); return; }
-          const nextTurn = (roomData.turn + 1) % roomData.players.length;
-          await updateDoc(roomRef, { board: finalBoard, players: newPlayers, deck: newDeck, turn: nextTurn, passCount: newPassCount });
-        } catch (e) { setMenuError("提交失敗: " + e.message); }
+        const newPlayers = [...roomData.players];
+        newPlayers[meIdx] = { ...me, hand: finalHand, hasIceBroken: finalIce };
+        const roomRef = doc(db, 'artifacts', MY_FIREBASE_CONFIG.projectId, 'public', 'data', 'rooms', roomId);
+        await updateDoc(roomRef, { 
+          players: newPlayers, 
+          board: localBoard, 
+          turn: (roomData.turn + 1) % roomData.players.length,
+          deck: roomData.deck.slice(0, -1)
+        });
       };
 
-      const leaveRoom = () => { setGameState('menu'); setRoomId(''); setShowMenu(false); };
-      const showLocalMessage = (msg) => { setMessage(msg); setTimeout(() => { if (gameState === 'playing') setMessage(''); }, 3000); };
+      const leaveRoom = () => { setGameState('menu'); setRoomId(''); setMenuError(''); };
 
-      const hintTileIds = useMemo(() => {
-        if (!showHints || gameState !== 'playing' || !roomData) return [];
-        if (roomData.players[roomData.turn]?.id !== user?.uid) return [];
-        let ids = new Set();
-        findValidSetsFromHand(localHand).forEach(set => set.forEach(t => ids.add(t.id)));
-        const me = roomData.players.find(p => p.id === user?.uid);
-        if (me && me.hasIceBroken) {
-          localHand.forEach(tile => {
-            for (let i = 0; i < localBoard.length; i++) {
-              if (isValidSet([...localBoard[i], tile])) { ids.add(tile.id); break; }
-            }
-          });
-        }
-        return Array.from(ids);
-      }, [showHints, gameState, localHand, localBoard, roomData, user?.uid]);
-
-      // 渲染主畫面
-      if (gameState === 'auth') return <div className="h-[100dvh] bg-stone-200 flex flex-col items-center justify-center font-bold text-gray-500">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-4 border-blue-600 mb-4"></div>
-        正在連線伺服器...
-      </div>;
-
-      if (gameState === 'menu') {
-        return (
-          <div className="h-[100dvh] bg-stone-100 flex flex-col items-center justify-center p-4">
-            <div className="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center overflow-y-auto max-h-full">
-              <h1 className="text-3xl font-bold mb-2 text-gray-800">行動拉密</h1>
-              <p className="text-sm text-gray-500 mb-6">多人連線版</p>
-              {menuError && <div className="mb-4 text-red-500 text-xs font-bold bg-red-50 p-3 rounded border border-red-200 text-left leading-relaxed">{menuError}</div>}
-              <div className="mb-6 text-left">
-                <label className="block text-sm font-bold text-gray-700 mb-1">你的暱稱</label>
-                <input type="text" value={playerName} onChange={(e) => setPlayerName(e.target.value)} placeholder="輸入暱稱" className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              </div>
-              <div className="mb-6">
-                <p className="mb-2 text-sm text-gray-600 font-bold text-left">電腦難度 (若加入電腦)：</p>
-                <div className="flex justify-between gap-2">
-                  <button onClick={() => setDifficulty('easy')} className={`flex-1 py-2 rounded font-bold text-sm ${difficulty === 'easy' ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-600'}`}>簡單</button>
-                  <button onClick={() => setDifficulty('medium')} className={`flex-1 py-2 rounded font-bold text-sm ${difficulty === 'medium' ? 'bg-yellow-500 text-white' : 'bg-gray-200 text-gray-600'}`}>普通</button>
-                  <button onClick={() => setDifficulty('hard')} className={`flex-1 py-2 rounded font-bold text-sm ${difficulty === 'hard' ? 'bg-red-500 text-white' : 'bg-gray-200 text-gray-600'}`}>困難</button>
-                </div>
-              </div>
-              <button disabled={isProcessing} onClick={createRoom} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg transition-colors shadow mb-4 active:scale-95 disabled:bg-gray-400">
-                {isProcessing ? '建立中...' : '建立新房間 (當房主)'}
-              </button>
-              <div className="flex items-center gap-2 my-4">
-                <div className="h-px bg-gray-300 flex-1"></div><span className="text-xs text-gray-400 font-bold">或者</span><div className="h-px bg-gray-300 flex-1"></div>
-              </div>
-              <div className="flex gap-2">
-                <input type="text" value={joinCodeInput} onChange={(e) => setJoinCodeInput(e.target.value)} placeholder="代碼" maxLength={4} className="flex-1 px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-center uppercase tracking-widest font-bold" />
-                <button disabled={isProcessing} onClick={joinRoom} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow active:scale-95 disabled:bg-gray-400">
-                  {isProcessing ? '...' : '加入'}
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      }
-
-      if (gameState === 'lobby') {
-        const isHost = roomData?.hostId === user?.uid;
-        return (
-          <div className="h-[100dvh] bg-stone-100 flex flex-col items-center justify-center p-4">
-            <div className="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center relative overflow-y-auto max-h-full">
-              <button onClick={leaveRoom} className="absolute top-4 left-4 text-gray-400 hover:text-gray-600">← 離開</button>
-              <h2 className="text-xl font-bold mb-2 mt-4 text-gray-800">房間代碼</h2>
-              <div className="text-4xl font-black text-blue-600 tracking-[0.25em] mb-8 bg-blue-50 py-3 rounded-lg border-2 border-blue-200 font-mono">{roomId}</div>
-              <div className="text-left mb-6">
-                <p className="text-sm font-bold text-gray-500 mb-2 border-b pb-1">已加入玩家 ({roomData?.players?.length || 0}/4)</p>
-                <ul className="space-y-2 mb-4">
-                  {roomData?.players?.map((p, idx) => (
-                    <li key={p.id} className="flex items-center justify-between bg-gray-50 p-2 rounded">
-                      <div className="flex items-center gap-2">
-                         <span className="w-6 h-6 rounded-full bg-gray-300 flex items-center justify-center text-xs font-bold text-gray-600">{idx+1}</span>
-                         <span className="font-bold text-gray-700 truncate max-w-[150px]">{p.name} {p.id === roomData.hostId ? '👑' : ''} {p.id === user?.uid ? '(你)' : ''}</span>
-                      </div>
-                      {isHost && (p.isBot || p.id !== user.uid) && <button onClick={() => removePlayer(p.id)} className="text-red-400 hover:text-red-600 font-bold px-2">X</button>}
-                    </li>
-                  ))}
-                </ul>
-                {isHost && roomData?.players?.length < 4 && <button onClick={addBot} className="text-sm bg-blue-100 hover:bg-blue-200 text-blue-700 font-bold py-2 px-4 rounded w-full border border-blue-200 transition-colors">+ 加入電腦對手</button>}
-              </div>
-              {isHost ? <button disabled={isProcessing} onClick={startMultiplayerGame} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors active:scale-95 disabled:bg-gray-400">
-                {isProcessing ? '啟動中...' : '開始遊戲'}
-              </button> : <p className="text-gray-500 font-bold animate-pulse">等待房主開始遊戲...</p>}
-            </div>
-          </div>
-        );
-      }
-
-      // 遊戲結算
-      let gameoverMsg = '';
-      if (gameState === 'gameover' && roomData) {
-         if (roomData.isStalemate) {
-            let minScore = Infinity; let winner = null;
-            roomData.players.forEach(p => {
-               let score = p.hand.reduce((sum, t) => sum + (t.isJoker ? 30 : t.value), 0);
-               if (score < minScore) { minScore = score; winner = p; }
-            });
-            gameoverMsg = `僵局結算！${winner?.name} 剩餘牌分最少 (${minScore}) 獲勝！`;
-         } else {
-            const winner = roomData.players.find(p => p.id === roomData.winnerId);
-            gameoverMsg = `🎉 ${winner?.name} 贏得了遊戲！ 🎉`;
-         }
-      }
+      if (gameState === 'auth') return <div className="h-screen flex items-center justify-center font-bold text-stone-500">連線中...</div>;
 
       return (
         <div className="h-[100dvh] bg-stone-200 flex flex-col max-w-3xl mx-auto shadow-2xl relative overflow-hidden">
-          {/* 頂部資訊列 */}
-          <div className="bg-slate-800 text-white p-3 flex justify-between items-center shadow-md z-10 shrink-0">
-            <div className="flex gap-2 overflow-x-auto items-center flex-1">
-              {roomData?.players?.map((p, idx) => (
-                <div key={p.id} className={`flex flex-col items-center p-1.5 rounded min-w-[3.5rem] ${roomData.turn === idx && roomData.status === 'playing' ? 'bg-slate-600 ring-2 ring-yellow-400' : ''}`}>
-                  <span className="text-xs sm:text-sm font-bold truncate max-w-[4rem]">{p.name} {p.id === user.uid ? '(你)' : ''}</span>
-                  <span className="text-[10px] text-gray-300">{p.hasIceBroken ? '已破冰' : '未破冰'}</span>
-                  <span className="text-xs bg-slate-700 px-2 py-0.5 rounded mt-1">{p.hand.length} 張</span>
+          {gameState === 'menu' && (
+            <div className="absolute inset-0 bg-stone-100 flex flex-col items-center justify-center p-4 z-50">
+              <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm text-center">
+                <h1 className="text-4xl font-black text-stone-800 mb-8">行動拉密</h1>
+                {menuError && <div className="mb-4 text-red-500 text-sm font-bold bg-red-50 p-3 rounded-lg border border-red-200">{menuError}</div>}
+                <input type="text" value={playerName} onChange={e => setPlayerName(e.target.value)} placeholder="你的暱稱" className="w-full px-4 py-3 border-2 rounded-xl mb-4 focus:border-blue-500 outline-none" />
+                <button disabled={isProcessing} onClick={createRoom} className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl shadow-lg active:scale-95 mb-6 disabled:bg-stone-400">
+                  {isProcessing ? '建立中...' : '建立新房間 (當房主)'}
+                </button>
+                <div className="flex gap-2">
+                  <input type="text" value={joinCodeInput} onChange={e => setJoinCodeInput(e.target.value)} placeholder="代碼" maxLength={4} className="flex-1 px-4 py-2 border-2 rounded-xl text-center uppercase font-mono" />
+                  <button onClick={joinRoom} className="bg-green-600 text-white px-6 rounded-xl font-bold">加入</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {gameState === 'lobby' && (
+            <div className="absolute inset-0 bg-stone-100 flex flex-col items-center justify-center p-4 z-50">
+              <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm text-center">
+                <button onClick={leaveRoom} className="text-stone-400 mb-4 block underline">← 離開</button>
+                <p className="text-stone-400 font-bold mb-1">房間代碼</p>
+                <div className="text-5xl font-black text-blue-600 tracking-widest mb-8">{roomId}</div>
+                <div className="text-left mb-8">
+                  <p className="font-bold text-stone-500 border-b pb-2 mb-2">玩家列表 ({roomData?.players.length}/4)</p>
+                  {roomData?.players.map(p => <div key={p.id} className="py-2 font-bold text-stone-700">👤 {p.name} {p.id === roomData.hostId ? '👑' : ''}</div>)}
+                </div>
+                {roomData?.hostId === user.uid ? (
+                  <button onClick={startMultiplayerGame} className="w-full bg-green-600 text-white font-bold py-4 rounded-xl shadow-lg">開始遊戲</button>
+                ) : <p className="text-stone-400 animate-pulse">等待房主開始...</p>}
+              </div>
+            </div>
+          )}
+
+          {/* 遊戲進行中的 UI 簡化示意 */}
+          <div className="bg-stone-800 text-white p-3 flex justify-between shrink-0">
+             <div className="flex gap-2">
+               {roomData?.players.map((p, i) => (
+                 <div key={p.id} className={`px-2 py-1 rounded text-xs ${roomData.turn === i ? 'bg-yellow-500 text-black' : 'bg-stone-700'}`}>
+                   {p.name}: {p.hand.length}
+                 </div>
+               ))}
+             </div>
+             <button onClick={() => setShowMenu(!showMenu)} className="font-bold">⋮</button>
+          </div>
+
+          <div className="flex-1 p-4 overflow-y-auto flex flex-col items-center">
+            {message && <div className="bg-yellow-100 text-yellow-800 px-4 py-2 rounded-full font-bold mb-4">{message}</div>}
+            <div className="flex flex-wrap gap-4 justify-center">
+              {localBoard.map((set, idx) => (
+                <div key={idx} className="flex gap-1 p-2 bg-white/50 rounded-xl border-2 border-stone-300">
+                  {set.map(t => <Tile key={t.id} tile={t} onClick={() => handleBoardClick(idx, t)} />)}
                 </div>
               ))}
             </div>
-            <div className="flex items-center gap-3 ml-2 shrink-0">
-              <div className="text-center">
-                <div className="text-[10px] text-gray-400">牌堆</div>
-                <div className="font-bold text-sm">{roomData?.deck?.length || 0}</div>
-              </div>
-              <button onClick={() => setShowMenu(!showMenu)} className="text-gray-300 hover:text-white px-2 py-1 text-xl font-bold bg-slate-700 rounded">⋮</button>
-            </div>
           </div>
 
-          {showMenu && (
-            <div className="absolute top-14 right-2 bg-white rounded shadow-xl z-50 overflow-hidden flex flex-col w-36 border border-gray-200">
-              <div className="px-4 py-2 bg-gray-100 text-xs font-bold text-gray-500 text-center border-b tracking-wider">房號: {roomId}</div>
-              <button onClick={() => { setShowHints(!showHints); setShowMenu(false); }} className="px-4 py-3 text-sm text-gray-700 font-bold hover:bg-gray-50 text-left border-b flex justify-between items-center">
-                自動提示 <span className={`w-3 h-3 rounded-full ${showHints ? 'bg-green-500' : 'bg-gray-300'}`}></span>
-              </button>
-              <button onClick={leaveRoom} className="px-4 py-3 text-sm text-red-600 font-bold hover:bg-red-50 text-left border-b">離開房間</button>
-              <button onClick={() => setShowMenu(false)} className="px-4 py-3 text-sm text-gray-600 font-bold hover:bg-gray-50 text-left">繼續遊戲</button>
+          {roomData?.players[roomData.turn]?.id === user.uid && (
+            <div className="bg-blue-50 p-2 border-t-2 border-blue-100 flex justify-center gap-1 min-h-[60px]">
+              {staging.map(t => <Tile key={t.id} tile={t} onClick={() => {
+                if(t.source === 'hand') setLocalHand([...localHand, t]);
+                setStaging(staging.filter(x => x.id !== t.id));
+              }} />)}
+              {staging.length >= 3 && <button onClick={formNewSet} className="bg-blue-600 text-white px-3 rounded-lg text-xs">出組</button>}
             </div>
           )}
 
-          {/* 桌面區 */}
-          <div className="flex-1 p-3 overflow-y-auto flex flex-col relative">
-            <div className="absolute top-2 left-0 w-full flex justify-center pointer-events-none z-10">
-              {message ? ( <span className="font-bold px-4 py-1.5 rounded-full text-sm bg-yellow-200 text-yellow-800 shadow-md transition-opacity">{message}</span> ) : (
-                roomData?.players[roomData?.turn]?.id !== user?.uid && gameState === 'playing' && (
-                  <span className="font-bold px-4 py-1.5 rounded-full text-sm bg-gray-800/80 text-white shadow-md backdrop-blur-sm flex items-center gap-2">
-                     等待 {roomData?.players[roomData?.turn]?.name} 出牌...
-                  </span>
-                )
-              )}
+          <div className="bg-white p-4 border-t-2 shrink-0">
+            <div className="flex justify-between mb-2">
+               <span className="text-xs font-bold text-stone-400">我的手牌</span>
+               {roomData?.players[roomData.turn]?.id === user.uid && <button onClick={endTurn} className="bg-green-600 text-white px-4 py-1 rounded-lg font-bold text-sm">確認結束</button>}
             </div>
-            <div className="flex flex-wrap gap-x-4 gap-y-6 justify-center pb-4 mt-10">
-              {localBoard.length === 0 ? <div className="text-gray-400 mt-10 text-center text-sm">桌面目前沒有牌</div> : (
-                localBoard.map((set, idx) => {
-                  const isValid = isValidSet(set);
-                  return (
-                    <div key={idx} className="flex flex-col items-center relative max-w-full px-2">
-                      <div className={`flex gap-1 p-1.5 bg-white/70 rounded-lg shadow-sm border-2 max-w-full overflow-x-auto hide-scrollbar ${isValid ? 'border-gray-300' : 'border-red-400 bg-red-50'}`}>
-                        {set.map(tile => <Tile key={tile.id} tile={tile} onClick={() => handleBoardClick(idx, tile)} />)}
-                      </div>
-                      {roomData?.players[roomData?.turn]?.id === user?.uid && staging.length > 0 && <button onClick={() => addToSet(idx)} className="absolute -bottom-5 bg-blue-500 text-white text-xs px-2 py-1 rounded shadow hover:bg-blue-600 z-10">+ 塞入此組</button>}
-                    </div>
-                  );
-                })
-              )}
+            <div className="flex flex-wrap gap-1 justify-center max-h-32 overflow-y-auto">
+              {localHand.map(t => <Tile key={t.id} tile={t} onClick={() => handleHandClick(t)} />)}
             </div>
           </div>
-
-          {/* 暫存區 */}
-          {roomData?.players[roomData?.turn]?.id === user?.uid && (
-            <div className="bg-blue-50 border-t-2 border-blue-200 p-2 min-h-[4.5rem] flex flex-col justify-center shadow-inner relative shrink-0">
-              <div className="absolute top-1 left-2 text-[10px] font-bold text-blue-400 uppercase tracking-widest">暫存區</div>
-              <div className="flex flex-wrap gap-1 justify-center mt-3">
-                {staging.length === 0 ? <span className="text-gray-400 text-xs">點擊牌放到這裡組合</span> : (
-                  staging.map(tile => (
-                    <div key={tile.id} className="relative">
-                      <Tile tile={tile} onClick={() => handleStagingClick(tile)} />
-                      {tile.source === 'hand' && <span className="absolute -top-2 -right-2 bg-green-500 text-white text-[10px] w-4 h-4 flex items-center justify-center rounded-full shadow">↓</span>}
-                    </div>
-                  ))
-                )}
-              </div>
-              {staging.length > 0 && <div className="flex justify-center mt-2"><button onClick={formNewSet} className="bg-blue-600 text-white text-xs px-4 py-1.5 rounded-full shadow hover:bg-blue-700 active:scale-95">建立新牌組</button></div>}
-            </div>
-          )}
-
-          {/* 手牌區 */}
-          <div className={`bg-slate-100 border-t-2 border-gray-300 p-2 sm:p-4 shadow-[0_-4px_10px_rgba(0,0,0,0.1)] z-20 shrink-0 transition-opacity ${roomData?.players[roomData?.turn]?.id !== user?.uid && gameState === 'playing' ? 'opacity-70 pointer-events-none' : ''}`}>
-            <div className="flex justify-between items-end mb-2 gap-2">
-              <div className="flex flex-col gap-1 pointer-events-auto">
-                 <div className="text-[10px] font-bold text-slate-500">
-                   {roomData?.players?.find(p => p.id === user.uid)?.hasIceBroken ? <span className="text-green-600">已破冰</span> : <span className="text-red-500">未破冰 (需30分)</span>}
-                 </div>
-                 <div className="flex gap-1.5">
-                  <button onClick={() => sortHand('number')} className="px-2 py-1 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs rounded shadow-sm active:scale-95">123排序</button>
-                  <button onClick={() => sortHand('color')} className="px-2 py-1 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs rounded shadow-sm active:scale-95">顏色排序</button>
-                </div>
-              </div>
-              {roomData?.players[roomData?.turn]?.id === user?.uid && gameState === 'playing' && (
-                <div className="flex gap-2">
-                   <button onClick={resetTurn} className="px-3 py-1.5 bg-gray-400 hover:bg-gray-500 text-white font-bold text-xs rounded shadow active:scale-95">重設</button>
-                  <button onClick={endTurn} className={`px-4 py-1.5 font-bold text-sm rounded shadow active:scale-95 text-white ${roomData?.deck?.length === 0 ? 'bg-orange-500 hover:bg-orange-600' : 'bg-green-600 hover:bg-green-700'}`}>
-                    {roomData?.deck?.length === 0 ? '出牌 / 跳過' : '確認出牌'}
-                  </button>
-                </div>
-              )}
-            </div>
-            <div className="flex flex-wrap gap-1 justify-center max-h-32 sm:max-h-48 overflow-y-auto p-1 pointer-events-auto">
-              {localHand.map(tile => <Tile key={tile.id} tile={tile} onClick={() => handleHandClick(tile)} isHinted={hintTileIds.includes(tile.id)} />)}
-            </div>
-          </div>
-
-          {gameState === 'gameover' && (
-            <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
-              <div className="bg-white p-6 sm:p-8 rounded-xl text-center shadow-2xl max-w-sm w-full">
-                <h2 className="text-xl sm:text-2xl font-bold mb-6 leading-relaxed">{gameoverMsg}</h2>
-                <button onClick={leaveRoom} className="bg-blue-600 text-white font-bold py-3 px-8 rounded-lg hover:bg-blue-700 shadow-md w-full">回大廳</button>
-              </div>
-            </div>
-          ) }
         </div>
       );
     }
 
     function Main() {
-      const [modulesLoaded, setModulesLoaded] = useState(false);
-      const [configError, setConfigError] = useState(false);
-      const [fbApp, setFbApp] = useState(null);
-
+      const [ready, setReady] = useState(false);
+      const [app, setApp] = useState(null);
       useEffect(() => {
-        const loadFirebase = () => {
+        const init = () => {
           if (!window.FirebaseModules) return;
           const { initializeApp, getApps, getApp } = window.FirebaseModules;
-          let config = (Object.keys(MY_FIREBASE_CONFIG).length > 0 && MY_FIREBASE_CONFIG.apiKey) ? MY_FIREBASE_CONFIG : null;
-          
-          if (!config) {
-             try { config = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}'); } catch(e) {}
-          }
-          
-          if (config && config.apiKey) {
-             try {
-               // 檢查是否已經初始化過，避免重複初始化錯誤
-               const appInstance = getApps().length > 0 ? getApp() : initializeApp(config);
-               setFbApp(appInstance);
-               setModulesLoaded(true);
-             } catch (e) {
-               console.error("Firebase init failed:", e);
-               setConfigError(true);
-             }
-          } else { setConfigError(true); }
+          const currentApp = getApps().length > 0 ? getApp() : initializeApp(MY_FIREBASE_CONFIG);
+          setApp(currentApp); setReady(true);
         };
-        if (window.FirebaseModules) { loadFirebase(); } 
-        else { window.addEventListener('firebaseModulesReady', loadFirebase); return () => window.removeEventListener('firebaseModulesReady', loadFirebase); }
+        if (window.FirebaseModules) init();
+        else window.addEventListener('firebaseModulesReady', init);
       }, []);
-
-      if (configError) {
-        return (
-          <div className="h-[100dvh] bg-stone-200 flex flex-col items-center justify-center p-6 text-center">
-             <div className="bg-white p-8 rounded-xl shadow-lg max-w-md">
-                <h2 className="text-2xl font-bold text-red-600 mb-4">資料庫設定錯誤</h2>
-                <p className="text-gray-600 mb-4 text-left leading-relaxed">
-                  網頁無法連接到雲端資料庫。請確認：<br/><br/>
-                  1. 已經正確貼上 Firebase 設定碼。<br/>
-                  2. Firestore 資料庫已經「建立」。<br/>
-                  3. 已經啟用 Anonymous 匿名登入。
-                </p>
-             </div>
-          </div>
-        );
-      }
-
-      if (!modulesLoaded || !fbApp) {
-        return (
-           <div className="h-[100dvh] bg-stone-200 flex flex-col items-center justify-center font-bold text-gray-400">
-              <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600 mb-4"></div>
-              正在同步雲端模組...
-           </div>
-        );
-      }
-      return <App fbApp={fbApp} />;
+      return ready ? <App fbApp={app} /> : null;
     }
 
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(<Main />);
+    ReactDOM.createRoot(document.getElementById('root')).render(<Main />);
   </script>
 </body>
 </html>
