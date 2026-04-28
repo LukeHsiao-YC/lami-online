@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>行動拉密 - 多人連線版</title>
+  
+  <!-- 載入 Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- 載入 React 相關核心套件 -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  
+  <!-- 載入 Babel 讓瀏覽器可以讀懂 JSX 語法 -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    /* 隱藏長牌組的橫向捲軸，讓畫面保持乾淨 */
+    .hide-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .hide-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+  </style>
+</head>
+<body class="bg-stone-200 overflow-hidden">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    // 定義牌的顏色和數值
+    const COLORS = ['text-red-600', 'text-blue-600', 'text-gray-900', 'text-yellow-500'];
+    const BORDER_COLORS = ['border-red-600', 'border-blue-600', 'border-gray-900', 'border-yellow-500'];
+
+    // 產生一副新牌
+    const generateDeck = () => {
+      let newDeck = [];
+      let idCounter = 1;
+      for (let set = 0; set < 2; set++) {
+        for (let cIdx = 0; cIdx < COLORS.length; cIdx++) {
+          for (let value = 1; value <= 13; value++) {
+            newDeck.push({
+              id: idCounter++,
+              colorIdx: cIdx,
+              colorClass: COLORS[cIdx],
+              borderClass: BORDER_COLORS[cIdx],
+              value: value,
+              isJoker: false
+            });
+          }
+        }
+      }
+      newDeck.push({ id: idCounter++, value: '☻', colorIdx: -1, colorClass: 'text-purple-600', borderClass: 'border-purple-600', isJoker: true });
+      newDeck.push({ id: idCounter++, value: '☻', colorIdx: -1, colorClass: 'text-purple-600', borderClass: 'border-purple-600', isJoker: true });
+
+      for (let i = newDeck.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [newDeck[i], newDeck[j]] = [newDeck[j], newDeck[i]];
+      }
+      return newDeck;
+    };
+
+    // 驗證牌組是否合法
+    const isValidSet = (tiles) => {
+      if (tiles.length < 3 || tiles.length > 13) return false;
+      const jokers = tiles.filter(t => t.isJoker);
+      const regulars = tiles.filter(t => !t.isJoker);
+      if (regulars.length <= 1) return true; 
+
+      const isGroup = () => {
+        if (tiles.length > 4) return false;
+        const val = regulars[0].value;
+        const colors = new Set();
+        for (let t of regulars) {
+          if (t.value !== val) return false;
+          if (colors.has(t.colorIdx)) return false;
+          colors.add(t.colorIdx);
+        }
+        return true;
+      };
+
+      const isRun = () => {
+        const color = regulars[0].colorIdx;
+        for (let t of regulars) {
+          if (t.colorIdx !== color) return false;
+        }
+        const len = tiles.length;
+        for (let start = 1; start <= 14 - len; start++) {
+          let possible = true;
+          let availableRegulars = regulars.map(t => t.value);
+          let jokersLeft = jokers.length;
+          for (let i = 0; i < len; i++) {
+            let reqValue = start + i;
+            let idx = availableRegulars.indexOf(reqValue);
+            if (idx !== -1) {
+              availableRegulars.splice(idx, 1);
+            } else if (jokersLeft > 0) {
+              jokersLeft--;
+            } else {
+              possible = false;
+              break;
+            }
+          }
+          if (possible && availableRegulars.length === 0) return true;
+        }
+        return false;
+      };
+      return isGroup() || isRun();
+    };
+
+    // 計算牌組總分
+    const getSetValue = (tiles) => {
+      if (!isValidSet(tiles)) return 0;
+      const regulars = tiles.filter(t => !t.isJoker);
+      if (regulars.length === 0) return 0; 
+      const isGroup = regulars.every(t => t.value === regulars[0].value);
+      if (isGroup) return regulars[0].value * tiles.length;
+
+      const len = tiles.length;
+      const jokersCount = tiles.filter(t => t.isJoker).length;
+      for (let start = 1; start <= 14 - len; start++) {
+        let possible = true;
+        let jLeft = jokersCount;
+        let regVals = regulars.map(t => t.value);
+        for (let i = 0; i < len; i++) {
+          let req = start + i;
+          let idx = regVals.indexOf(req);
+          if (idx !== -1) {
+            regVals.splice(idx, 1);
+          } else if (jLeft > 0) {
+            jLeft--;
+          } else {
+            possible = false;
+            break;
+          }
+        }
+        if (possible) {
+          let sum = 0;
+          for (let i = 0; i < len; i++) sum += (start + i);
+          return sum;
+        }
+      }
+      return 0;
+    };
+
+    // 尋找手牌中合法的基礎牌組
+    const findValidSetsFromHand = (handTiles) => {
+      let foundSets = [];
+      let regulars = handTiles.filter(t => !t.isJoker); 
+
+      const valueMap = {};
+      regulars.forEach(t => {
+        if (!valueMap[t.value]) valueMap[t.value] = [];
+        valueMap[t.value].push(t);
+      });
+
+      for (let val in valueMap) {
+        let tilesOfVal = valueMap[val];
+        let uniqueColors = [];
+        let groupToPlay = [];
+        for (let t of tilesOfVal) {
+          if (!uniqueColors.includes(t.colorIdx)) {
+            uniqueColors.push(t.colorIdx);
+            groupToPlay.push(t);
+          }
+        }
+        if (groupToPlay.length >= 3) {
+          foundSets.push(groupToPlay);
+          groupToPlay.forEach(gt => {
+            const idx = regulars.findIndex(rt => rt.id === gt.id);
+            if (idx > -1) regulars.splice(idx, 1);
+          });
+        }
+      }
+
+      const colorMap = {};
+      regulars.forEach(t => {
+        if (!colorMap[t.colorIdx]) colorMap[t.colorIdx] = [];
+        colorMap[t.colorIdx].push(t);
+      });
+
+      for (let cIdx in colorMap) {
+        let tilesOfColor = colorMap[cIdx].sort((a, b) => a.value - b.value);
+        let currentRun = [];
+        for (let i = 0; i < tilesOfColor.length; i++) {
+          if (currentRun.length === 0) {
+            currentRun.push(tilesOfColor[i]);
+          } else {
+            const lastVal = currentRun[currentRun.length - 1].value;
+            const currentVal = tilesOfColor[i].value;
+            if (currentVal === lastVal + 1) {
+              currentRun.push(tilesOfColor[i]);
+            } else if (currentVal > lastVal + 1) {
+              if (currentRun.length >= 3) {
+                foundSets.push([...currentRun]);
+                currentRun.forEach(gt => {
+                  const idx = regulars.findIndex(rt => rt.id === gt.id);
+                  if (idx > -1) regulars.splice(idx, 1);
+                });
+              }
+              currentRun = [tilesOfColor[i]];
+            }
+          }
+        }
+        if (currentRun.length >= 3) foundSets.push([...currentRun]);
+      }
+      return foundSets;
+    };
+
+    // 桌面牌組自動排序
+    const sortTilesForBoard = (tiles) => {
+      const regulars = tiles.filter(t => !t.isJoker);
+      const jokers = tiles.filter(t => t.isJoker);
+
+      if (regulars.length <= 1) return [...regulars, ...jokers];
+
+      const isGroup = regulars[0].value === regulars[1].value;
+      if (isGroup) {
+        return [...regulars.sort((a, b) => a.colorIdx - b.colorIdx), ...jokers];
+      }
+
+      regulars.sort((a, b) => a.value - b.value);
+      let sorted = [];
+      let expectedVal = regulars[0].value;
+      let regIdx = 0;
+
+      while (regIdx < regulars.length) {
+        if (regulars[regIdx].value === expectedVal) {
+          sorted.push(regulars[regIdx]);
+          expectedVal++;
+          regIdx++;
+        } else if (regulars[regIdx].value < expectedVal) {
+          sorted.push(regulars[regIdx]);
+          regIdx++;
+        } else {
+          if (jokers.length > 0) {
+            sorted.push(jokers.pop());
+            expectedVal++;
+          } else {
+             expectedVal = regulars[regIdx].value;
+          }
+        }
+      }
+      return [...sorted, ...jokers];
+    };
+
+    const Tile = ({ tile, onClick, isStaged, invalid, isHinted }) => (
+      <div 
+        onClick={onClick}
+        className={`
+          relative flex items-center justify-center shrink-0
+          w-9 h-12 sm:w-11 sm:h-16 bg-white 
+          rounded shadow-md border-2 cursor-pointer font-bold
+          transform transition-transform active:scale-95
+          ${tile.borderClass}
+          ${isStaged ? 'opacity-80 scale-95 ring-2 ring-blue-300' : ''}
+          ${invalid ? 'bg-red-50 border-red-500 ring-2 ring-red-500' : ''}
+          ${isHinted && !isStaged ? 'ring-4 ring-green-400 shadow-[0_0_15px_rgba(74,222,128,0.6)] animate-pulse' : ''}
+        `}
+      >
+        <span className={`text-xl sm:text-2xl ${tile.colorClass}`}>
+          {tile.value}
+        </span>
+      </div>
+    );
+
+    function App() {
+      // 玩家與 Firebase 狀態
+      const [user, setUser] = useState(null);
+      const [playerName, setPlayerName] = useState('');
+      const [roomData, setRoomData] = useState(null);
+      const [roomId, setRoomId] = useState('');
+      const [joinCodeInput, setJoinCodeInput] = useState('');
+      const [menuError, setMenuError] = useState('');
+      const [difficulty, setDifficulty] = useState('medium'); 
+      
+      // 遊戲介面狀態
+      const [gameState, setGameState] = useState('auth'); 
+      const [showMenu, setShowMenu] = useState(false);
+      const [showHints, setShowHints] = useState(false);
+      const [message, setMessage] = useState('');
+
+      // 玩家本地暫存狀態
+      const [localBoard, setLocalBoard] = useState([]);
+      const [localHand, setLocalHand] = useState([]);
+      const [staging, setStaging] = useState([]);
+      const [backupBoard, setBackupBoard] = useState([]);
+      const [backupHand, setBackupHand] = useState([]);
+
+      const { fbApp, fbAuth, fbFs } = window;
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'rummikub-multiplayer';
+
+      // 初始化身份驗證
+      useEffect(() => {
+        const initAuth = async () => {
+          if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+            await fbAuth.signInWithCustomToken(fbAuth.getAuth(fbApp), __initial_auth_token);
+          } else {
+            await fbAuth.signInAnonymously(fbAuth.getAuth(fbApp));
+          }
+        };
+        initAuth();
+
+        const auth = fbAuth.getAuth(fbApp);
+        const unsubscribe = fbAuth.onAuthStateChanged(auth, (currentUser) => {
+          setUser(currentUser);
+          if (currentUser) setGameState('menu');
+        });
+        return () => unsubscribe();
+      }, [fbApp, fbAuth]);
+
+      // 監聽房間資料變化
+      useEffect(() => {
+        if (!user || !roomId) return;
+        const db = fbFs.getFirestore(fbApp);
+        const roomRef = fbFs.doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        
+        const unsubscribe = fbFs.onSnapshot(roomRef, (snapshot) => {
+          if (snapshot.exists()) {
+            const data = snapshot.data();
+            setRoomData(data);
+            
+            if (data.status === 'playing' && gameState !== 'playing' && gameState !== 'gameover') {
+               setGameState('playing');
+               setMessage('遊戲開始！');
+            } else if (data.status === 'gameover' && gameState !== 'gameover') {
+               setGameState('gameover');
+            }
+          } else {
+            setMenuError("房間已被解散");
+            setGameState('menu');
+            setRoomId('');
+          }
+        }, (error) => {
+          console.error(error);
+        });
+
+        return () => unsubscribe();
+      }, [user, roomId, gameState, fbApp, fbFs, appId]);
+
+      // 換人時，同步本地備份資料
+      useEffect(() => {
+        if (gameState === 'playing' && roomData) {
+          setLocalBoard(JSON.parse(JSON.stringify(roomData.board)));
+          setBackupBoard(JSON.parse(JSON.stringify(roomData.board)));
+          setStaging([]);
+          
+          const myPlayerInfo = roomData.players.find(p => p.id === user.uid);
+          if (myPlayerInfo) {
+            setLocalHand(JSON.parse(JSON.stringify(myPlayerInfo.hand)));
+            setBackupHand(JSON.parse(JSON.stringify(myPlayerInfo.hand)));
+          }
+        }
+      }, [roomData?.turn, gameState]);
+
+      // 電腦對手 AI (由房主設備統一執行)
+      useEffect(() => {
+        if (gameState === 'playing' && roomData && roomData.status === 'playing') {
+          const currentTurnPlayer = roomData.players[roomData.turn];
+          
+          // 確保只有房主，而且輪到電腦時才會執行
+          if (currentTurnPlayer?.isBot && roomData.hostId === user?.uid) {
+            const timer = setTimeout(async () => {
+              let foundSets = findValidSetsFromHand(currentTurnPlayer.hand);
+              let playedSomething = false;
+              let newHand = [...currentTurnPlayer.hand];
+              let newBoard = JSON.parse(JSON.stringify(roomData.board));
+
+              // 套用房主設定的難度
+              const skipTurn = difficulty === 'easy' && Math.random() < 0.3;
+
+              if (!skipTurn && foundSets.length > 0) {
+                let setsToPlay = [];
+                if (!currentTurnPlayer.hasIceBroken) {
+                  let score = 0;
+                  foundSets.forEach(set => score += getSetValue(set));
+                  if (score >= 30) setsToPlay = foundSets;
+                } else {
+                  setsToPlay = difficulty === 'easy' ? [foundSets[0]] : foundSets;
+                }
+
+                if (setsToPlay.length > 0) {
+                  setsToPlay.forEach(set => {
+                    newBoard.push(sortTilesForBoard(set));
+                    set.forEach(tile => {
+                      const idx = newHand.findIndex(t => t.id === tile.id);
+                      if (idx !== -1) newHand.splice(idx, 1);
+                    });
+                  });
+                  playedSomething = true;
+                }
+              }
+
+              if (difficulty === 'hard' && (playedSomething || currentTurnPlayer.hasIceBroken)) {
+                let changed = true;
+                while (changed) {
+                  changed = false;
+                  for (let i = newHand.length - 1; i >= 0; i--) {
+                    let tile = newHand[i];
+                    for (let j = 0; j < newBoard.length; j++) {
+                      let testSet = [...newBoard[j], tile];
+                      if (isValidSet(testSet)) {
+                        newBoard[j] = sortTilesForBoard(testSet);
+                        newHand.splice(i, 1);
+                        changed = true;
+                        playedSomething = true;
+                        break; 
+                      }
+                    }
+                  }
+                }
+              }
+
+              const db = fbFs.getFirestore(fbApp);
+              const roomRef = fbFs.doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+              let newDeck = [...roomData.deck];
+              let newPlayers = JSON.parse(JSON.stringify(roomData.players));
+
+              if (playedSomething) {
+                newPlayers[roomData.turn] = { ...currentTurnPlayer, hand: newHand, hasIceBroken: true };
+
+                if (newHand.length === 0) {
+                  await fbFs.updateDoc(roomRef, {
+                    board: newBoard,
+                    players: newPlayers,
+                    status: 'gameover',
+                    winnerId: currentTurnPlayer.id
+                  });
+                  return;
+                }
+
+                const nextTurn = (roomData.turn + 1) % roomData.players.length;
+                await fbFs.updateDoc(roomRef, {
+                  board: newBoard,
+                  players: newPlayers,
+                  turn: nextTurn,
+                  passCount: 0
+                });
+
+              } else {
+                // 電腦沒出牌，自動抽牌
+                if (newDeck.length > 0) {
+                  const drawnTile = newDeck.pop();
+                  newHand.push(drawnTile);
+                }
+                newPlayers[roomData.turn] = { ...currentTurnPlayer, hand: newHand };
+
+                let newPassCount = roomData.passCount + 1;
+                if (newDeck.length === 0 && newPassCount >= roomData.players.length) {
+                  await fbFs.updateDoc(roomRef, {
+                    board: newBoard,
+                    players: newPlayers,
+                    status: 'gameover',
+                    isStalemate: true
+                  });
+                  return;
+                }
+
+                const nextTurn = (roomData.turn + 1) % roomData.players.length;
+                await fbFs.updateDoc(roomRef, {
+                  board: newBoard,
+                  players: newPlayers,
+                  deck: newDeck,
+                  turn: nextTurn,
+                  passCount: newPassCount
+                });
+              }
+            }, 1800); // 電腦稍微停頓一下假裝思考
+            return () => clearTimeout(timer);
+          }
+        }
+      }, [roomData?.turn, gameState]);
+
+      // 建立房間
+      const createRoom = async () => {
+        if (!playerName.trim()) { setMenuError('請輸入暱稱'); return; }
+        const code = Math.random().toString(36).substring(2, 6).toUpperCase();
+        const db = fbFs.getFirestore(fbApp);
+        const roomRef = fbFs.doc(db, 'artifacts', appId, 'public', 'data', 'rooms', code);
+        
+        await fbFs.setDoc(roomRef, {
+          hostId: user.uid,
+          status: 'waiting',
+          players: [{ id: user.uid, name: playerName, hand: [], hasIceBroken: false, isBot: false }],
+          board: [],
+          deck: [],
+          turn: 0,
+          passCount: 0
+        });
+        
+        setRoomId(code);
+        setGameState('lobby');
+        setMenuError('');
+      };
+
+      // 房主加入電腦
+      const addBot = async () => {
+        if (roomData.players.length >= 4) return;
+        const botCount = roomData.players.filter(p => p.isBot).length;
+        const newBot = {
+          id: 'bot_' + Math.random().toString(36).substring(2, 9),
+          name: `電腦 ${botCount + 1}`,
+          hand: [],
+          hasIceBroken: false,
+          isBot: true
+        };
+        const db = fbFs.getFirestore(fbApp);
+        const roomRef = fbFs.doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        await fbFs.updateDoc(roomRef, {
+          players: [...roomData.players, newBot]
+        });
+      };
+
+      // 房主踢除玩家或電腦
+      const removePlayer = async (targetId) => {
+         const db = fbFs.getFirestore(fbApp);
+         const roomRef = fbFs.doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+         await fbFs.updateDoc(roomRef, {
+           players: roomData.players.filter(p => p.id !== targetId)
+         });
+      };
+
+      // 加入房間
+      const joinRoom = async () => {
+        if (!playerName.trim()) { setMenuError('請輸入暱稱'); return; }
+        const code = joinCodeInput.trim().toUpperCase();
+        if (!code) { setMenuError('請輸入代碼'); return; }
+
+        const db = fbFs.getFirestore(fbApp);
+        const roomRef = fbFs.doc(db, 'artifacts', appId, 'public', 'data', 'rooms', code);
+        const snap = await fbFs.getDoc(roomRef);
+
+        if (!snap.exists()) {
+          setMenuError('找不到這間房');
+          return;
+        }
+
+        const data = snap.data();
+        if (data.status !== 'waiting') {
+          setMenuError('遊戲已經開始或結束了');
+          return;
+        }
+        if (data.players.length >= 4) {
+          setMenuError('房間已滿');
+          return;
+        }
+        if (data.players.some(p => p.id === user.uid)) {
+          setRoomId(code);
+          setGameState('lobby');
+          return;
+        }
+
+        const newPlayers = [...data.players, { id: user.uid, name: playerName, hand: [], hasIceBroken: false, isBot: false }];
+        await fbFs.updateDoc(roomRef, { players: newPlayers });
+        
+        setRoomId(code);
+        setGameState('lobby');
+        setMenuError('');
+      };
+
+      // 開始遊戲
+      const startMultiplayerGame = async () => {
+        const db = fbFs.getFirestore(fbApp);
+        const roomRef = fbFs.doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        
+        const fullDeck = generateDeck();
+        const updatedPlayers = roomData.players.map((p, index) => {
+          let hand = [];
+          if (index === 0) {
+             const jokerIndex = fullDeck.findIndex(t => t.isJoker);
+             if (jokerIndex !== -1) {
+               hand = [fullDeck.splice(jokerIndex, 1)[0], ...fullDeck.splice(0, 13)];
+             } else {
+               hand = fullDeck.splice(0, 14);
+             }
+          } else {
+             hand = fullDeck.splice(0, 14);
+          }
+          return { ...p, hand, hasIceBroken: false };
+        });
+
+        await fbFs.updateDoc(roomRef, {
+          status: 'playing',
+          players: updatedPlayers,
+          deck: fullDeck,
+          board: [],
+          turn: 0,
+          passCount: 0
+        });
+      };
+
+      // 計算提示
+      const hintTileIds = useMemo(() => {
+        if (!showHints || gameState !== 'playing' || !roomData) return [];
+        const isMyTurn = roomData.players[roomData.turn]?.id === user?.uid;
+        if (!isMyTurn) return [];
+
+        let ids = new Set();
+        let handSets = findValidSetsFromHand(localHand);
+        handSets.forEach(set => set.forEach(t => ids.add(t.id)));
+
+        const me = roomData.players.find(p => p.id === user?.uid);
+        if (me && me.hasIceBroken) {
+          localHand.forEach(tile => {
+            for (let i = 0; i < localBoard.length; i++) {
+              if (isValidSet([...localBoard[i], tile])) {
+                ids.add(tile.id);
+                break;
+              }
+            }
+          });
+        }
+        return Array.from(ids);
+      }, [showHints, gameState, localHand, localBoard, roomData, user]);
+
+      const showLocalMessage = (msg) => {
+        setMessage(msg);
+        setTimeout(() => {
+           if (gameState === 'playing') setMessage('');
+        }, 3000);
+      };
+
+      // 玩家互動邏輯
+      const handleHandClick = (tile) => {
+        if (roomData.players[roomData.turn]?.id !== user.uid) return;
+        setLocalHand(localHand.filter(t => t.id !== tile.id));
+        setStaging([...staging, { ...tile, source: 'hand' }]);
+      };
+
+      const handleBoardClick = (setIndex, tile) => {
+        if (roomData.players[roomData.turn]?.id !== user.uid) return;
+        const me = roomData.players.find(p => p.id === user.uid);
+        if (!me?.hasIceBroken) {
+          showLocalMessage('必須先完成破冰 (出牌總分30以上) 才能拆解桌面的牌！');
+          return;
+        }
+        const newBoard = [...localBoard];
+        const targetSet = newBoard[setIndex];
+        const tileIndex = targetSet.findIndex(t => t.id === tile.id);
+        targetSet.splice(tileIndex, 1);
+        if (targetSet.length === 0) newBoard.splice(setIndex, 1);
+        setLocalBoard(newBoard);
+        setStaging([...staging, { ...tile, source: 'board' }]);
+      };
+
+      const handleStagingClick = (tile) => {
+        if (tile.source === 'hand') {
+          const newStaging = staging.filter(t => t.id !== tile.id);
+          const cleanTile = { ...tile };
+          delete cleanTile.source;
+          setLocalHand([...localHand, cleanTile]);
+          setStaging(newStaging);
+        } else {
+          showLocalMessage('這張牌來自桌面，你必須把它拼回桌面上，或點擊「重設回合」。');
+        }
+      };
+
+      const formNewSet = () => {
+        if (staging.length < 3) {
+          showLocalMessage('至少需要3張牌才能組成新牌組。');
+          return;
+        }
+        const cleanStaging = staging.map(t => {
+          const cleanT = { ...t };
+          delete cleanT.source;
+          return cleanT;
+        });
+        setLocalBoard([...localBoard, sortTilesForBoard(cleanStaging)]);
+        setStaging([]);
+      };
+
+      const addToSet = (setIndex) => {
+        if (staging.length === 0) return;
+        const newBoard = [...localBoard];
+        const cleanStaging = staging.map(t => {
+          const cleanT = { ...t };
+          delete cleanT.source;
+          return cleanT;
+        });
+        newBoard[setIndex] = sortTilesForBoard([...newBoard[setIndex], ...cleanStaging]);
+        setLocalBoard(newBoard);
+        setStaging([]);
+      };
+
+      const resetTurn = () => {
+        setLocalHand([...backupHand]);
+        setLocalBoard(JSON.parse(JSON.stringify(backupBoard)));
+        setStaging([]);
+        showLocalMessage('已重設為回合開始的狀態。');
+      };
+
+      const sortHand = (type) => {
+        let sortedHand = [...localHand];
+        if (type === 'number') {
+          sortedHand.sort((a, b) => a.value - b.value || a.colorIdx - b.colorIdx);
+        } else if (type === 'color') {
+          sortedHand.sort((a, b) => a.colorIdx - b.colorIdx || (a.value === '☻' ? 99 : a.value) - (b.value === '☻' ? 99 : b.value));
+        }
+        setLocalHand(sortedHand);
+        if (roomData && roomData.players[roomData.turn]?.id !== user.uid) {
+           const db = fbFs.getFirestore(fbApp);
+           const roomRef = fbFs.doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+           const newPlayers = [...roomData.players];
+           const myIdx = newPlayers.findIndex(p => p.id === user.uid);
+           if (myIdx > -1) {
+              newPlayers[myIdx].hand = sortedHand;
+              fbFs.updateDoc(roomRef, { players: newPlayers });
+           }
+        }
+      };
+
+      const endTurn = async () => {
+        if (staging.length > 0) {
+          showLocalMessage('暫存區還有牌！請將它們放到桌上，或退回手牌。');
+          return;
+        }
+
+        const invalidSets = localBoard.filter(set => !isValidSet(set));
+        if (invalidSets.length > 0) {
+          showLocalMessage('桌面上包含不合法的牌組 (必須為同數字不同色，或同色連續數字，且大於3張)。');
+          return;
+        }
+
+        const meIdx = roomData.players.findIndex(p => p.id === user.uid);
+        const me = roomData.players[meIdx];
+        let isHandChanged = localHand.length !== backupHand.length;
+        let finalBoard = localBoard;
+        let finalHand = localHand;
+        let isIceBrokenNow = me.hasIceBroken;
+        let needsPenaltyDraw = false;
+
+        if (!me.hasIceBroken) {
+          const currentBoardValue = localBoard.reduce((sum, set) => sum + getSetValue(set), 0);
+          const backupBoardValue = backupBoard.reduce((sum, set) => sum + getSetValue(set), 0);
+          const scoreAdded = currentBoardValue - backupBoardValue;
+
+          if (scoreAdded > 0 && scoreAdded < 30) {
+            showLocalMessage(`破冰失敗！總合為 ${scoreAdded} 分，需要 30 分以上。已重設並罰抽牌。`);
+            finalBoard = backupBoard;
+            finalHand = backupHand;
+            needsPenaltyDraw = true;
+            isHandChanged = false; 
+          } else if (scoreAdded >= 30) {
+            isIceBrokenNow = true;
+            isHandChanged = true;
+          }
+        }
+
+        const db = fbFs.getFirestore(fbApp);
+        const roomRef = fbFs.doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        
+        let newDeck = [...roomData.deck];
+        let newPlayers = [...roomData.players];
+        
+        const didNothing = (!isHandChanged && JSON.stringify(localBoard) === JSON.stringify(backupBoard));
+        let didPlayTiles = !didNothing && !needsPenaltyDraw;
+
+        if (didNothing || needsPenaltyDraw) {
+          if (newDeck.length > 0) {
+             const drawnTile = newDeck.pop();
+             finalHand = [...finalHand, drawnTile];
+          }
+        }
+
+        newPlayers[meIdx] = { ...me, hand: finalHand, hasIceBroken: isIceBrokenNow };
+        
+        if (finalHand.length === 0) {
+          await fbFs.updateDoc(roomRef, {
+            board: finalBoard,
+            players: newPlayers,
+            status: 'gameover',
+            winnerId: user.uid
+          });
+          return;
+        }
+
+        let newPassCount = didPlayTiles ? 0 : roomData.passCount + 1;
+        if (newDeck.length === 0 && newPassCount >= roomData.players.length) {
+          await fbFs.updateDoc(roomRef, {
+            board: finalBoard,
+            players: newPlayers,
+            status: 'gameover',
+            isStalemate: true
+          });
+          return;
+        }
+
+        const nextTurn = (roomData.turn + 1) % roomData.players.length;
+        await fbFs.updateDoc(roomRef, {
+          board: finalBoard,
+          players: newPlayers,
+          deck: newDeck,
+          turn: nextTurn,
+          passCount: newPassCount
+        });
+      };
+
+      const leaveRoom = () => {
+         setGameState('menu');
+         setRoomId('');
+         setShowMenu(false);
+      };
+
+      if (gameState === 'auth') {
+        return <div className="h-[100dvh] bg-stone-200 flex items-center justify-center font-bold text-gray-500">連線中...</div>;
+      }
+
+      if (gameState === 'menu') {
+        return (
+          <div className="h-[100dvh] bg-stone-100 flex flex-col items-center justify-center p-4">
+            <div className="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center">
+              <h1 className="text-3xl font-bold mb-2 text-gray-800">行動拉密</h1>
+              <p className="text-sm text-gray-500 mb-6">多人連線版</p>
+
+              {menuError && <div className="mb-4 text-red-500 text-sm font-bold bg-red-50 py-2 rounded">{menuError}</div>}
+
+              <div className="mb-6 text-left">
+                <label className="block text-sm font-bold text-gray-700 mb-1">你的暱稱</label>
+                <input 
+                  type="text" 
+                  value={playerName} 
+                  onChange={(e) => setPlayerName(e.target.value)}
+                  placeholder="輸入暱稱"
+                  className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div className="mb-6">
+                <p className="mb-2 text-sm text-gray-600 font-bold text-left">電腦難度 (若加入電腦)：</p>
+                <div className="flex justify-between gap-2">
+                  <button onClick={() => setDifficulty('easy')} className={`flex-1 py-2 rounded font-bold text-sm ${difficulty === 'easy' ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-600'}`}>簡單</button>
+                  <button onClick={() => setDifficulty('medium')} className={`flex-1 py-2 rounded font-bold text-sm ${difficulty === 'medium' ? 'bg-yellow-500 text-white' : 'bg-gray-200 text-gray-600'}`}>普通</button>
+                  <button onClick={() => setDifficulty('hard')} className={`flex-1 py-2 rounded font-bold text-sm ${difficulty === 'hard' ? 'bg-red-500 text-white' : 'bg-gray-200 text-gray-600'}`}>困難</button>
+                </div>
+              </div>
+
+              <button onClick={createRoom} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg transition-colors shadow mb-4">
+                建立新房間 (當房主)
+              </button>
+
+              <div className="flex items-center gap-2 my-4">
+                <div className="h-px bg-gray-300 flex-1"></div>
+                <span className="text-xs text-gray-400 font-bold">或者</span>
+                <div className="h-px bg-gray-300 flex-1"></div>
+              </div>
+
+              <div className="flex gap-2">
+                <input 
+                  type="text" 
+                  value={joinCodeInput} 
+                  onChange={(e) => setJoinCodeInput(e.target.value)}
+                  placeholder="輸入房間代碼"
+                  maxLength={4}
+                  className="flex-1 px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-center uppercase tracking-widest font-bold"
+                />
+                <button onClick={joinRoom} className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow">
+                  加入
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      if (gameState === 'lobby') {
+        const isHost = roomData?.hostId === user?.uid;
+        return (
+          <div className="h-[100dvh] bg-stone-100 flex flex-col items-center justify-center p-4">
+            <div className="bg-white p-8 rounded-xl shadow-lg max-w-sm w-full text-center relative">
+              <button onClick={leaveRoom} className="absolute top-4 left-4 text-gray-400 hover:text-gray-600">← 離開</button>
+              <h2 className="text-xl font-bold mb-2 mt-4 text-gray-800">房間代碼</h2>
+              <div className="text-4xl font-black text-blue-600 tracking-[0.25em] mb-8 bg-blue-50 py-3 rounded-lg border-2 border-blue-200">
+                {roomId}
+              </div>
+
+              <div className="text-left mb-6">
+                <p className="text-sm font-bold text-gray-500 mb-2 border-b pb-1">已加入玩家 ({roomData?.players?.length || 0}/4)</p>
+                <ul className="space-y-2 mb-4">
+                  {roomData?.players?.map((p, idx) => (
+                    <li key={p.id} className="flex items-center justify-between bg-gray-50 p-2 rounded">
+                      <div className="flex items-center gap-2">
+                         <span className="w-6 h-6 rounded-full bg-gray-300 flex items-center justify-center text-xs font-bold text-gray-600">{idx+1}</span>
+                         <span className="font-bold text-gray-700">{p.name} {p.id === roomData.hostId ? '👑' : ''} {p.id === user?.uid ? '(你)' : ''}</span>
+                      </div>
+                      {isHost && (p.isBot || p.id !== user.uid) && (
+                         <button onClick={() => removePlayer(p.id)} className="text-red-400 hover:text-red-600 font-bold px-2">X</button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                
+                {isHost && roomData?.players?.length < 4 && (
+                  <button onClick={addBot} className="text-sm bg-blue-100 hover:bg-blue-200 text-blue-700 font-bold py-2 px-4 rounded w-full border border-blue-200 transition-colors">
+                    + 加入電腦對手
+                  </button>
+                )}
+              </div>
+
+              {isHost ? (
+                <button onClick={startMultiplayerGame} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg shadow transition-colors">
+                  開始遊戲
+                </button>
+              ) : (
+                <p className="text-gray-500 font-bold animate-pulse">等待房主開始遊戲...</p>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      const me = roomData?.players?.find(p => p.id === user?.uid);
+      const isMyTurn = roomData?.status === 'playing' && roomData?.players[roomData?.turn]?.id === user?.uid;
+      const currentTurnPlayer = roomData?.players[roomData?.turn];
+
+      let gameoverMsg = '';
+      if (gameState === 'gameover' && roomData) {
+         if (roomData.isStalemate) {
+            let minScore = Infinity;
+            let winner = null;
+            roomData.players.forEach(p => {
+               let score = p.hand.reduce((sum, t) => sum + (t.isJoker ? 30 : t.value), 0);
+               if (score < minScore) { minScore = score; winner = p; }
+            });
+            gameoverMsg = `僵局結算！${winner?.name} 剩餘 ${minScore} 分獲勝！`;
+         } else {
+            const winner = roomData.players.find(p => p.id === roomData.winnerId);
+            gameoverMsg = `🎉 ${winner?.name} 贏得了遊戲！ 🎉`;
+         }
+      }
+
+      return (
+        <div className="h-[100dvh] bg-stone-200 flex flex-col max-w-3xl mx-auto shadow-2xl relative overflow-hidden">
+          
+          <div className="bg-slate-800 text-white p-3 flex justify-between items-center shadow-md z-10 shrink-0">
+            <div className="flex gap-2 overflow-x-auto items-center flex-1">
+              {roomData?.players?.map((p, idx) => (
+                <div key={p.id} className={`flex flex-col items-center p-1.5 rounded min-w-[3.5rem] ${roomData.turn === idx && roomData.status === 'playing' ? 'bg-slate-600 ring-2 ring-yellow-400' : ''}`}>
+                  <span className="text-xs sm:text-sm font-bold truncate max-w-[4rem]">{p.name} {p.id === user.uid ? '(你)' : ''}</span>
+                  <span className="text-[10px] text-gray-300">{p.hasIceBroken ? '已破冰' : '未破冰'}</span>
+                  <span className="text-xs bg-slate-700 px-2 py-0.5 rounded mt-1">{p.hand.length} 張</span>
+                </div>
+              ))}
+            </div>
+            
+            <div className="flex items-center gap-3 ml-2 shrink-0">
+              <div className="text-center">
+                <div className="text-[10px] text-gray-400">牌堆</div>
+                <div className="font-bold text-sm">{roomData?.deck?.length || 0}</div>
+              </div>
+              <button onClick={() => setShowMenu(!showMenu)} className="text-gray-300 hover:text-white px-2 py-1 text-xl font-bold bg-slate-700 rounded">⋮</button>
+            </div>
+          </div>
+
+          {showMenu && (
+            <div className="absolute top-14 right-2 bg-white rounded shadow-xl z-50 overflow-hidden flex flex-col w-36 border border-gray-200">
+              <div className="px-4 py-2 bg-gray-100 text-xs font-bold text-gray-500 text-center border-b tracking-wider">房號: {roomId}</div>
+              <button onClick={() => { setShowHints(!showHints); setShowMenu(false); }} className="px-4 py-3 text-sm text-gray-700 font-bold hover:bg-gray-50 text-left border-b flex justify-between items-center">
+                自動提示 <span className={`w-3 h-3 rounded-full ${showHints ? 'bg-green-500' : 'bg-gray-300'}`}></span>
+              </button>
+              <button onClick={leaveRoom} className="px-4 py-3 text-sm text-red-600 font-bold hover:bg-red-50 text-left border-b">離開房間</button>
+              <button onClick={() => setShowMenu(false)} className="px-4 py-3 text-sm text-gray-600 font-bold hover:bg-gray-50 text-left">繼續遊戲</button>
+            </div>
+          )}
+
+          <div className="flex-1 p-3 overflow-y-auto flex flex-col relative">
+            <div className="absolute top-2 left-0 w-full flex justify-center pointer-events-none z-10">
+              {message ? (
+                 <span className="font-bold px-4 py-1.5 rounded-full text-sm bg-yellow-200 text-yellow-800 shadow-md transition-opacity">
+                   {message}
+                 </span>
+              ) : (
+                !isMyTurn && gameState === 'playing' && (
+                  <span className="font-bold px-4 py-1.5 rounded-full text-sm bg-gray-800/80 text-white shadow-md backdrop-blur-sm flex items-center gap-2">
+                     等待 {currentTurnPlayer?.name} 出牌 <span className="flex gap-1"><span className="animate-bounce">.</span><span className="animate-bounce" style={{animationDelay: '0.1s'}}>.</span><span className="animate-bounce" style={{animationDelay: '0.2s'}}>.</span></span>
+                  </span>
+                )
+              )}
+            </div>
+            
+            <div className="flex flex-wrap gap-x-4 gap-y-6 justify-center pb-4 mt-10">
+              {localBoard.length === 0 ? (
+                <div className="text-gray-400 mt-10 text-center text-sm">桌面目前沒有牌</div>
+              ) : (
+                localBoard.map((set, idx) => {
+                  const isValid = isValidSet(set);
+                  return (
+                    <div key={idx} className="flex flex-col items-center relative max-w-full px-2">
+                      <div className={`flex gap-1 p-1.5 bg-white/70 rounded-lg shadow-sm border-2 max-w-full overflow-x-auto hide-scrollbar ${isValid ? 'border-gray-300' : 'border-red-400 bg-red-50'}`}>
+                        {set.map(tile => (
+                          <Tile key={tile.id} tile={tile} onClick={() => handleBoardClick(idx, tile)} />
+                        ))}
+                      </div>
+                      {isMyTurn && staging.length > 0 && (
+                        <button onClick={() => addToSet(idx)} className="absolute -bottom-5 bg-blue-500 text-white text-xs px-2 py-1 rounded shadow hover:bg-blue-600 z-10">
+                          + 塞入此組
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {isMyTurn && (
+            <div className="bg-blue-50 border-t-2 border-blue-200 p-2 min-h-[4.5rem] flex flex-col justify-center shadow-inner relative shrink-0">
+              <div className="absolute top-1 left-2 text-[10px] font-bold text-blue-400">工作暫存區</div>
+              <div className="flex flex-wrap gap-1 justify-center mt-3">
+                {staging.length === 0 ? (
+                  <span className="text-gray-400 text-xs">點擊手牌或桌面牌放到這裡</span>
+                ) : (
+                  staging.map(tile => (
+                    <div key={tile.id} className="relative">
+                      <Tile tile={tile} onClick={() => handleStagingClick(tile)} />
+                      {tile.source === 'hand' && <span className="absolute -top-2 -right-2 bg-green-500 text-white text-[10px] w-4 h-4 flex items-center justify-center rounded-full shadow">↓</span>}
+                    </div>
+                  ))
+                )}
+              </div>
+              {staging.length > 0 && (
+                <div className="flex justify-center mt-2">
+                  <button onClick={formNewSet} className="bg-blue-600 text-white text-xs px-4 py-1.5 rounded-full shadow hover:bg-blue-700 active:scale-95">建立新牌組</button>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className={`bg-slate-100 border-t-2 border-gray-300 p-2 sm:p-4 shadow-[0_-4px_10px_rgba(0,0,0,0.1)] z-20 shrink-0 transition-opacity ${!isMyTurn && gameState === 'playing' ? 'opacity-70 pointer-events-none' : ''}`}>
+            <div className="flex justify-between items-end mb-2 gap-2">
+              <div className="flex flex-col gap-1 pointer-events-auto">
+                 <div className="text-[10px] font-bold text-slate-500">
+                   {me?.hasIceBroken ? <span className="text-green-600">已破冰</span> : <span className="text-red-500">未破冰 (需30分)</span>}
+                 </div>
+                 <div className="flex gap-1.5">
+                  <button onClick={() => sortHand('number')} className="px-2 py-1 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs rounded shadow-sm active:scale-95">123排序</button>
+                  <button onClick={() => sortHand('color')} className="px-2 py-1 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs rounded shadow-sm active:scale-95">顏色排序</button>
+                </div>
+              </div>
+              
+              {isMyTurn && gameState === 'playing' && (
+                <div className="flex gap-2">
+                   <button onClick={resetTurn} className="px-3 py-1.5 bg-gray-400 hover:bg-gray-500 text-white font-bold text-xs rounded shadow active:scale-95">
+                    重設回合
+                  </button>
+                  <button onClick={endTurn} className={`px-4 py-1.5 font-bold text-sm rounded shadow active:scale-95 text-white ${roomData?.deck?.length === 0 ? 'bg-orange-500 hover:bg-orange-600' : 'bg-green-600 hover:bg-green-700'}`}>
+                    {roomData?.deck?.length === 0 ? '確認出牌 / 跳過回合' : '確認出牌 / 抽牌'}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap gap-1 justify-center max-h-32 sm:max-h-48 overflow-y-auto p-1 pointer-events-auto">
+              {localHand.map(tile => (
+                <Tile key={tile.id} tile={tile} onClick={() => handleHandClick(tile)} isHinted={hintTileIds.includes(tile.id)} />
+              ))}
+            </div>
+          </div>
+
+          {gameState === 'gameover' && (
+            <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+              <div className="bg-white p-6 sm:p-8 rounded-xl text-center shadow-2xl max-w-sm w-full">
+                <h2 className="text-xl sm:text-2xl font-bold mb-6 leading-relaxed">{gameoverMsg}</h2>
+                <button onClick={leaveRoom} className="bg-blue-600 text-white font-bold py-3 px-8 rounded-lg hover:bg-blue-700 shadow-md w-full">
+                  回大廳
+                </button>
+              </div>
+            </div>
+          )}
+
+        </div>
+      );
+    }
+
+    function Main() {
+      const [modulesLoaded, setModulesLoaded] = useState(false);
+
+      useEffect(() => {
+        Promise.all([
+          import('https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js'),
+          import('https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js'),
+          import('https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js')
+        ]).then(([app, auth, fs]) => {
+          window.fbApp = app;
+          window.fbAuth = auth;
+          window.fbFs = fs;
+          
+          const appId = typeof __app_id !== 'undefined' ? __app_id : 'rummikub-multiplayer';
+          let config = {};
+          try { config = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}'); } catch(e) {}
+          
+          if (Object.keys(config).length > 0) {
+             app.initializeApp(config);
+          }
+          setModulesLoaded(true);
+        }).catch(err => {
+          console.error("Firebase 載入失敗:", err);
+        });
+      }, []);
+
+      if (!modulesLoaded) {
+        return (
+           <div className="h-[100dvh] bg-stone-200 flex flex-col items-center justify-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-4 border-blue-600 mb-4"></div>
+              <p className="font-bold text-gray-500">連線模組準備中...</p>
+           </div>
+        );
+      }
+      return <App />;
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<Main />);
+  </script>
+</body>
+</html>
