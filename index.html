@@ -42,7 +42,7 @@
     const { useState, useEffect, useMemo, useRef } = React;
 
     // ==========================================
-    // ⚠️ 請在這裡填入你的 Firebase 設定 ⚠️
+    // 你的專屬 Firebase 設定
     // ==========================================
     const MY_FIREBASE_CONFIG = {
       apiKey: "AIzaSyB-JKAKg3SRs60w6n4z6QA94V33RCBfvfM",
@@ -57,7 +57,7 @@
     const COLORS = ['text-red-600', 'text-blue-600', 'text-gray-900', 'text-yellow-500'];
     const BORDER_COLORS = ['border-red-600', 'border-blue-600', 'border-gray-900', 'border-yellow-500'];
 
-    // 基礎遊戲功能
+    // 遊戲基礎邏輯
     const generateDeck = () => {
       let newDeck = [];
       let idCounter = 1;
@@ -207,7 +207,7 @@
         }
       }, [roomData?.turn, gameState]);
 
-      // 電腦 AI (房主處理)
+      // 電腦對戰由房主統一處理 AI 運算
       useEffect(() => {
         if (gameState === 'playing' && roomData?.status === 'playing' && roomData.players[roomData.turn]?.isBot && roomData.hostId === user.uid) {
           const timer = setTimeout(async () => {
@@ -322,13 +322,30 @@
       };
 
       const leaveRoom = () => { setGameState('menu'); setRoomId(''); setMenuError(''); };
+      const showLocalMessage = (msg) => { setMessage(msg); setTimeout(() => { if (gameState === 'playing') setMessage(''); }, 3000); };
+      
+      const hintTileIds = useMemo(() => {
+        if (!showHints || gameState !== 'playing' || !roomData) return [];
+        if (roomData.players[roomData.turn]?.id !== user?.uid) return [];
+        let ids = new Set();
+        findValidSetsFromHand(localHand).forEach(set => set.forEach(t => ids.add(t.id)));
+        const me = roomData.players.find(p => p.id === user?.uid);
+        if (me && me.hasIceBroken) {
+          localHand.forEach(tile => {
+            for (let i = 0; i < localBoard.length; i++) {
+              if (isValidSet([...localBoard[i], tile])) { ids.add(tile.id); break; }
+            }
+          });
+        }
+        return Array.from(ids);
+      }, [showHints, gameState, localHand, localBoard, roomData, user?.uid]);
 
       if (gameState === 'auth') return <div className="h-screen flex items-center justify-center font-bold text-stone-500 bg-stone-100">連線中...</div>;
 
       return (
         <div className="h-[100dvh] bg-stone-200 flex flex-col max-w-3xl mx-auto shadow-2xl relative overflow-hidden">
           {gameState === 'menu' && (
-            <div className="absolute inset-0 bg-stone-100 flex flex-col items-center justify-center p-4 z-50">
+            <div className="absolute inset-0 bg-stone-100 flex flex-col items-center justify-center p-4 z-50 overflow-y-auto">
               <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm text-center">
                 <h1 className="text-4xl font-black text-stone-800 mb-8">行動拉密</h1>
                 {menuError && <div className="mb-4 text-red-500 text-xs font-bold bg-red-50 p-3 rounded-lg border border-red-200 text-left leading-relaxed">{menuError}</div>}
